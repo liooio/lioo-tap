@@ -1,0 +1,4 @@
+<resources>
+    <string name="accessibility_description">在您手动设置的屏幕坐标模拟点击。仅在按下悬浮窗开始按钮后运行，可随时停止。</string>
+    <string name="bound_target">绑定：%1$s</string>
+</resources>
