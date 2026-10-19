@@ -5,7 +5,7 @@ import org.json.JSONObject;
 
 import java.util.Locale;
 
-/** Helpers for the structured tap, drag, and delay steps used by recorded scripts. */
+/** 处理录制脚本中点击、拖动和延时等结构化步骤。 */
 final class RecordedScript {
     static final String TAP = "tap";
     static final String DRAG = "drag";

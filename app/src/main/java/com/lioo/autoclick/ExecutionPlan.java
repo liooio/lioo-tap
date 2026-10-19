@@ -11,7 +11,7 @@ import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/** Converts saved script commands into the normalized steps used by the playback engine. */
+/** 将已保存的脚本命令转换为回放引擎使用的标准步骤。 */
 final class ExecutionPlan {
     static final String REPEAT_BLOCK = "repeat_block";
     private static final Pattern NUMBER = Pattern.compile("\\d+(?:\\.\\d+)?");
@@ -61,7 +61,7 @@ final class ExecutionPlan {
                             .put("interval", intervalMs)
                             .put("steps", recordingPlan));
                 } catch (JSONException ignored) {
-                    // Primitive settings and an in-memory JSONArray are valid JSON.
+                    // 基础配置值和内存中的 JSONArray 均为有效 JSON 数据。
                 }
             }
             return result;
@@ -119,7 +119,7 @@ final class ExecutionPlan {
                     append(result, from(context, nested, depth + 1));
                 }
             } catch (JSONException ignored) {
-                // Keep the executable steps already produced.
+                // 保留此前已经成功生成的可执行步骤。
             }
         }
         return result;

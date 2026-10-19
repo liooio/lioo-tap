@@ -8,9 +8,11 @@ import android.graphics.RectF;
 import android.view.MotionEvent;
 import android.view.View;
 
-/** A destructive action that only completes after the thumb reaches the far edge. */
+/** 只有滑块到达末端才会触发的防误操作删除控件。 */
 final class SlideToDeleteView extends View {
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final RectF trackBounds = new RectF();
+    private final RectF thumbBounds = new RectF();
     private final Runnable action;
     private float thumbX;
     private float downOffset;
@@ -30,7 +32,8 @@ final class SlideToDeleteView extends View {
         super.onDraw(canvas);
         float radius = getHeight() / 2f;
         paint.setColor(0xFFFFECEA);
-        canvas.drawRoundRect(new RectF(0, 0, getWidth(), getHeight()), radius, radius, paint);
+        trackBounds.set(0, 0, getWidth(), getHeight());
+        canvas.drawRoundRect(trackBounds, radius, radius, paint);
 
         paint.setColor(0xFF9B4040);
         paint.setTextSize(sp(14));
@@ -42,9 +45,9 @@ final class SlideToDeleteView extends View {
         float thumbSize = getHeight() - dp(8);
         float top = dp(4);
         paint.setColor(0xFFBA1A1A);
-        canvas.drawRoundRect(new RectF(thumbX + dp(4), top,
-                thumbX + dp(4) + thumbSize, top + thumbSize),
-                thumbSize / 2f, thumbSize / 2f, paint);
+        thumbBounds.set(thumbX + dp(4), top,
+                thumbX + dp(4) + thumbSize, top + thumbSize);
+        canvas.drawRoundRect(thumbBounds, thumbSize / 2f, thumbSize / 2f, paint);
         paint.setColor(0xFFFFFFFF);
         paint.setTextSize(sp(21));
         canvas.drawText("››", thumbX + dp(4) + thumbSize / 2f, baseline, paint);

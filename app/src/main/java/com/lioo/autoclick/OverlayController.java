@@ -88,7 +88,7 @@ final class OverlayController {
         if (toolbox == null) {
             return;
         }
-        // Re-anchor after rotation because the old right edge may now be in the screen center.
+        // 屏幕旋转后重新贴边，避免原来的右边缘位置落到新屏幕中央。
         ballParams.x = edgeX(ballParams.width);
         ballParams.y = Math.max(0, Math.min(screenHeight() - ballParams.height, ballParams.y));
         windowManager.updateViewLayout(toolbox, ballParams);
@@ -229,7 +229,7 @@ final class OverlayController {
                 || clickCount.contains(screenX, screenY)) {
             return;
         }
-        // Defer removal until the current outside-touch dispatch has completed.
+        // 等待当前外部触摸事件分发完成后再移除悬浮面板。
         controls.post(() -> {
             if (!service.shouldIgnoreOutsideTouch()) {
                 hidePanel();
@@ -313,7 +313,7 @@ final class OverlayController {
         target.setScaleX(1f);
         target.setScaleY(1f);
         target.setBackground(circleBackground(running ? 0xEE1769FF : 0xDD2563EB));
-        // Android 12+ only passes touches through an app overlay when its window alpha is low enough.
+        // Android 12 及以上版本仅在悬浮窗透明度足够低时允许触摸穿透。
         if (running) {
             targetParams.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
             targetParams.alpha = 0.5f;
@@ -358,7 +358,7 @@ final class OverlayController {
         if (target == null) {
             return;
         }
-        // Keep the pulse inside the overlay window so Android cannot clip its circle to a square.
+        // 将脉冲限制在悬浮窗口内，避免 Android 将圆形动画裁剪成方形。
         target.animate().cancel();
         target.setScaleX(1f);
         target.setScaleY(1f);
@@ -529,7 +529,7 @@ final class OverlayController {
         boolean overlaps = x < panel.x + panel.width && x + size > panel.x
                 && y < panel.y + panel.height && y + size > panel.y;
         if (overlaps) {
-            // Place the marker below the panel on tall screens and beside it in landscape.
+            // 竖屏时将目标点放在面板下方，横屏时放在面板侧边。
             if (screenHeight() - panel.y - panel.height >= size + dp(24)) {
                 y = panel.y + panel.height + dp(12);
             } else {
@@ -642,7 +642,7 @@ final class OverlayController {
             if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
                 View draggedView = marker ? target : (toolboxHandle ? toolbox : controls);
                 if (toolboxHandle) {
-                    // The floating ball changes sides at the midpoint and never rests in the center.
+                    // 悬浮球越过屏幕中线后切换贴边方向，不停留在屏幕中央。
                     ballOnRight = event.getRawX() >= screenWidth() / 2f;
                     current.x = edgeX(draggedView.getWidth());
                 } else {

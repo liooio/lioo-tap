@@ -14,7 +14,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-/** Draggable confirmation shown before starting the clicker. */
+/** 连点器开始运行前显示的可拖动确认面板。 */
 final class ClickCountOverlay {
     private final OverlayService service;
     private final WindowManager windowManager;

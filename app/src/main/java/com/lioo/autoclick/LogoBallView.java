@@ -13,12 +13,13 @@ import android.graphics.RectF;
 import android.view.View;
 import android.view.ViewOutlineProvider;
 
-/** Circular floating control using the existing app logo without its transparent padding. */
+/** 使用应用 Logo 有效图形区域绘制的圆形悬浮球。 */
 final class LogoBallView extends View {
     private final Bitmap logo;
     private final Rect logoBounds;
     private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final Path circle = new Path();
+    private final RectF destinationBounds = new RectF();
 
     LogoBallView(Context context) {
         super(context);
@@ -45,8 +46,8 @@ final class LogoBallView extends View {
         paint.setColor(0xFF1769FF);
         canvas.drawCircle(getWidth() / 2f, getHeight() / 2f, radius, paint);
         paint.setColor(Color.WHITE);
-        canvas.drawBitmap(logo, logoBounds,
-                new RectF(0, 0, getWidth(), getHeight()), paint);
+        destinationBounds.set(0, 0, getWidth(), getHeight());
+        canvas.drawBitmap(logo, logoBounds, destinationBounds, paint);
         canvas.restore();
 
         if (isSelected()) {

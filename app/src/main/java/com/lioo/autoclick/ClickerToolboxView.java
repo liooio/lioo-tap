@@ -16,7 +16,7 @@ import android.widget.Toast;
 
 import java.util.List;
 
-/** Two-stage floating toolbox: tool picker first, clicker actions second. */
+/** 两级悬浮工具箱：第一级选择工具，第二级显示连点器操作。 */
 final class ClickerToolboxView {
     interface ShortcutAction {
         void run(Library.Entry entry);

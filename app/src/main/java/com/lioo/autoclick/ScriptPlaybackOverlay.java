@@ -21,7 +21,7 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-/** Countdown, stop control, and sequential execution for a recorded script. */
+/** 管理脚本回放的倒计时、运行控制和顺序执行。 */
 final class ScriptPlaybackOverlay {
     interface Listener {
         void onStopped();
@@ -252,8 +252,8 @@ final class ScriptPlaybackOverlay {
         boolean causedByControls = paused
                 || SystemClock.uptimeMillis() - controlTouchUptime < 1000L;
         if (causedByControls) {
-            // A physical touch on an overlay cancels an accessibility gesture. Keep the
-            // current logical step so pause/toggle/drag never terminates the script.
+            // 触摸悬浮控件会取消正在注入的无障碍手势，因此保留当前逻辑步骤，
+            // 避免暂停、轨迹切换或拖动控制栏导致脚本意外终止。
             retryStep = cancelledStep;
             if (!paused) {
                 handler.postDelayed(this::runNext, 80L);
@@ -557,7 +557,7 @@ final class ScriptPlaybackOverlay {
         trailToggle.setSelected(enabled);
     }
 
-    /** Animates the saved path without receiving input or changing playback timing. */
+    /** 仅绘制已保存轨迹，不接收触摸，也不改变脚本的回放时序。 */
     private final class PlaybackTrailView extends View {
         private final Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint touchPaint = new Paint(Paint.ANTI_ALIAS_FLAG);

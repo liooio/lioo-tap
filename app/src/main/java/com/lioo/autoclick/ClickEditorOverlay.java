@@ -16,7 +16,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-/** Centered floating editor for the single-click mode. */
+/** 单点连点模式使用的居中悬浮编辑器。 */
 final class ClickEditorOverlay {
     private final OverlayService service;
     private final WindowManager windowManager;

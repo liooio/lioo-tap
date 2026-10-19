@@ -5,7 +5,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.LinearLayout;
 
-/** Handles ACTION_OUTSIDE at the window root because ViewGroup does not route it to children. */
+/** 在窗口根节点处理 ACTION_OUTSIDE，因为 ViewGroup 不会将其分发给子视图。 */
 final class OutsideTouchLayout extends LinearLayout {
     interface Listener {
         void onOutsideTouch(float screenX, float screenY);

@@ -266,7 +266,7 @@ public final class GroupEditorActivity extends Activity {
                     long parsed = Long.parseLong(value.toString());
                     item.put("interval", Math.max(0, Math.min(600000, parsed)));
                 } catch (NumberFormatException | JSONException ignored) {
-                    // Invalid input is normalized when the editor loses focus.
+                    // 输入框失去焦点时会将无效值修正到允许范围。
                 }
             }
         });
@@ -307,7 +307,7 @@ public final class GroupEditorActivity extends Activity {
                     long parsed = Long.parseLong(value.toString());
                     item.put("repeat", Math.max(1, Math.min(9999, parsed)));
                 } catch (NumberFormatException | JSONException ignored) {
-                    // Invalid input is normalized when the editor loses focus.
+                    // 输入框失去焦点时会将无效值修正到允许范围。
                 }
             }
         });

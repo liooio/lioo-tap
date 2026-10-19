@@ -26,7 +26,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Full-screen touch recorder that mirrors completed gestures through accessibility. */
+/** 全屏触摸录制器，通过无障碍服务将采集完成的手势同步到目标应用。 */
 final class GestureRecordingOverlay {
     private static final int MAX_DRAG_POINTS = 120;
     private static final long MIN_POINT_INTERVAL_MS = 32L;
@@ -83,7 +83,7 @@ final class GestureRecordingOverlay {
         this.listener = listener;
         windowManager = (WindowManager) service.getSystemService(
                 Context.WINDOW_SERVICE);
-        // Accessibility overlays are trusted for touch pass-through on Android 12+.
+        // Android 12 及以上版本允许受信任的无障碍悬浮窗传递触摸。
         captureWindowManager = (WindowManager) accessibility.getSystemService(
                 Context.WINDOW_SERVICE);
     }
@@ -150,7 +150,7 @@ final class GestureRecordingOverlay {
         primary.setText("暂停");
         primary.setAlpha(1f);
         updateStatus();
-        // Wait until the start button has finished receiving its touch sequence.
+        // 等待“开始”按钮完成当前触摸序列后再创建捕获窗口。
         handler.post(() -> {
             if (active && recording) {
                 if (ClickSettings.recordingShowsTrail(service)) {
@@ -620,7 +620,7 @@ final class GestureRecordingOverlay {
             if (points.size() < MAX_DRAG_POINTS) {
                 points.add(new float[] {x, y});
             } else {
-                // Keep the endpoint current while bounding memory for very long drags.
+                // 长距离拖动达到采样上限后持续更新终点，限制内存占用。
                 previous[0] = x;
                 previous[1] = y;
             }
@@ -639,8 +639,8 @@ final class GestureRecordingOverlay {
             return;
         }
         injecting = true;
-        // Remove the input windows immediately. Changing touchability on four windows
-        // leaves a transition where the next tap can still be delivered to this listener.
+        // 立即移除输入窗口。仅修改四个窗口的可触摸状态会产生过渡期，
+        // 下一次点击仍可能被发送到当前监听器。
         removeCapture();
         int currentMirror = ++mirrorGeneration;
         long delayBefore = pendingDelayMs;
@@ -659,14 +659,13 @@ final class GestureRecordingOverlay {
             if (gestureTrail != null) {
                 gestureTrail.finish(gesture.tap);
             }
-            // The captured gesture is the source of truth for recording. Accessibility
-            // mirroring can be cancelled by the target app, especially for long drags;
-            // that must not silently discard an otherwise complete recorded step.
+            // 以捕获到的手势作为录制结果。目标应用可能取消无障碍镜像，
+            // 长距离拖动尤其常见，但不能因此丢弃已经完整采集的步骤。
             recordedGestures.add(gesture);
             recordedActionCount++;
             updateStatus();
-            // Two display frames are enough for InputDispatcher to observe window removal
-            // without imposing the former fixed 100 ms dead period on every operation.
+            // 等待约两个显示帧，让 InputDispatcher 感知窗口移除，
+            // 同时避免每次操作都产生原先固定的 100 毫秒停顿。
             handler.postDelayed(() -> dispatchPreparedGesture(
                     accessibility, gesture, currentMirror), INPUT_WINDOW_SETTLE_MS);
         } catch (RuntimeException exception) {
@@ -683,9 +682,8 @@ final class GestureRecordingOverlay {
                 || currentMirror != mirrorGeneration) {
             return;
         }
-        // Recording already consumed the user's real gesture duration. Keep only the
-        // live mirror short so a slow drag does not block the next input for seconds.
-        // The saved step still retains gesture.duration for normal playback.
+        // 录制阶段已经消耗了用户真实操作的时间，因此压缩即时镜像时长，
+        // 避免慢速拖动继续阻塞输入；保存的步骤仍保留原始时长用于正式回放。
         long mirrorDuration = gesture.tap ? gesture.duration
                 : Math.min(gesture.duration, 120L);
         long timeoutMs = Math.max(2000L, mirrorDuration + 2000L);
@@ -762,7 +760,7 @@ final class GestureRecordingOverlay {
                 }
                 result.put(step);
             } catch (JSONException ignored) {
-                // Fixed keys and primitive values cannot fail in practice.
+                // 固定字段名和基础类型在正常情况下不会写入失败。
             }
         }
         return result;
@@ -916,7 +914,7 @@ final class GestureRecordingOverlay {
         return (float) Math.max(0, Math.min(size - 1, normalized * size));
     }
 
-    /** Visual feedback only; this window never receives or blocks touch input. */
+    /** 仅提供手势视觉反馈，不接收也不阻挡触摸输入。 */
     private final class GestureTrailView extends View {
         private final Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint touchPaint = new Paint(Paint.ANTI_ALIAS_FLAG);

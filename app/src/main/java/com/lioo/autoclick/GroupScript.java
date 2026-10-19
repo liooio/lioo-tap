@@ -21,7 +21,7 @@ final class GroupScript {
             item.put("repeat", 1);
             item.put("interval", 0);
         } catch (JSONException ignored) {
-            // JSONObject backed by memory should not reject these values.
+            // 内存中的 JSONObject 可以安全写入这些基础类型值。
         }
         return item;
     }

@@ -16,7 +16,7 @@ final class OverlayAccess {
 
     static void requestPermission(Activity activity) {
         Toast.makeText(activity, "请允许连点器显示在其他应用上层", Toast.LENGTH_LONG).show();
-        // Android 11+ may show the app list even when the package URI is supplied.
+        // Android 11 及以上版本即使提供包名 URI，也可能先显示应用列表。
         Intent intent = new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:" + activity.getPackageName()));
         activity.startActivity(intent);

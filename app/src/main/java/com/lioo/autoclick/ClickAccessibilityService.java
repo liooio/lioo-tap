@@ -56,7 +56,7 @@ public final class ClickAccessibilityService extends AccessibilityService {
     }
 
     boolean shouldIgnoreOutsideTouch() {
-        // Injected gestures can reach an overlay as ACTION_OUTSIDE even after completion.
+        // 注入手势完成后仍可能向悬浮窗发送 ACTION_OUTSIDE，需要在短时间内忽略。
         return running || (lastGestureUptime > 0 && settings != null
                 && SystemClock.uptimeMillis() - lastGestureUptime < settings.durationMs + 300L);
     }
@@ -69,7 +69,7 @@ public final class ClickAccessibilityService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // This service does not inspect screen content or accessibility events.
+        // 本服务不读取屏幕内容，也不处理无障碍事件。
     }
 
     @Override
@@ -206,7 +206,7 @@ public final class ClickAccessibilityService extends AccessibilityService {
                 .addStroke(new GestureDescription.StrokeDescription(path, 0, settings.durationMs))
                 .build();
 
-        // Wait for the system callback so gestures never overlap on slower devices.
+        // 等待系统回调后再执行下一次，避免低性能设备上的手势相互重叠。
         lastGestureUptime = SystemClock.uptimeMillis();
         boolean dispatched = dispatchGesture(gesture, new GestureResultCallback() {
             @Override

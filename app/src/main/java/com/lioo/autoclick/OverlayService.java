@@ -16,7 +16,7 @@ import android.widget.Toast;
 
 import org.json.JSONArray;
 
-/** Owns the app overlay independently of the accessibility service used for gestures. */
+/** 独立管理应用悬浮窗，手势注入由无障碍服务负责。 */
 public final class OverlayService extends Service {
     private static final String CHANNEL_ID = "floating_controls";
     private static final int NOTIFICATION_ID = 1;
