@@ -13,6 +13,7 @@ import java.util.regex.Pattern;
 
 /** Converts saved script commands into the normalized steps used by the playback engine. */
 final class ExecutionPlan {
+    static final String REPEAT_BLOCK = "repeat_block";
     private static final Pattern NUMBER = Pattern.compile("\\d+(?:\\.\\d+)?");
 
     private ExecutionPlan() {
@@ -48,8 +49,19 @@ final class ExecutionPlan {
                 }
                 Library.Entry recording = GroupScript.resolve(context, item);
                 JSONArray recordingPlan = from(context, recording, depth + 1);
-                for (int repeat = 0; repeat < GroupScript.repeat(item); repeat++) {
-                    append(result, recordingPlan);
+                int repeats = GroupScript.repeat(item);
+                int intervalMs = GroupScript.intervalMs(item);
+                if (recordingPlan.length() == 0) {
+                    continue;
+                }
+                try {
+                    result.put(new JSONObject()
+                            .put("type", REPEAT_BLOCK)
+                            .put("repeat", repeats)
+                            .put("interval", intervalMs)
+                            .put("steps", recordingPlan));
+                } catch (JSONException ignored) {
+                    // Primitive settings and an in-memory JSONArray are valid JSON.
                 }
             }
             return result;

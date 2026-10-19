@@ -1,6 +1,11 @@
 package com.lioo.autoclick;
 
+import android.animation.ValueAnimator;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PathMeasure;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
@@ -29,13 +34,21 @@ final class ScriptPlaybackOverlay {
     private final Listener listener;
     private final boolean autoStart;
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable executionTimeTick = this::tickExecutionTime;
 
     private LinearLayout controls;
+    private PlaybackTrailView playbackTrail;
     private TextView status;
     private TextView start;
+    private TextView trailToggle;
     private WindowManager.LayoutParams params;
     private int index;
     private int loopIndex;
+    private JSONArray repeatedSteps;
+    private int repeatedIndex;
+    private int repeatedTotal;
+    private int repeatedRemaining;
+    private int repeatedIntervalMs;
     private int remainingCountdown;
     private final int countdownSeconds;
     private final int repeatCount;
@@ -44,6 +57,13 @@ final class ScriptPlaybackOverlay {
     private boolean paused;
     private long remainingDelay;
     private long delayResumeAt;
+    private long accumulatedExecutionMs;
+    private long activeSegmentStartedAt;
+    private boolean executionClockStarted;
+    private String currentStatusState = "准备执行";
+    private JSONObject retryStep;
+    private JSONObject inFlightStep;
+    private long controlTouchUptime;
     private float dragDownX;
     private float dragDownY;
     private int dragStartX;
@@ -90,7 +110,7 @@ final class ScriptPlaybackOverlay {
         controls.setContentDescription("拖动回放操作栏");
         controls.setOnTouchListener(this::drag);
         status = text(autoStart
-                ? loopLabel("准备执行")
+                ? executionLabel("准备执行")
                 : "等待开始 · " + name, 13, Color.WHITE, true);
         controls.addView(status, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
@@ -109,6 +129,7 @@ final class ScriptPlaybackOverlay {
                 pause();
             }
         });
+        protectControlTouch(start);
         LinearLayout.LayoutParams startParams = new LinearLayout.LayoutParams(dp(64), dp(42));
         startParams.rightMargin = dp(6);
         controls.addView(start, startParams);
@@ -116,9 +137,18 @@ final class ScriptPlaybackOverlay {
         exit.setGravity(Gravity.CENTER);
         exit.setBackground(background(0xFF3A4254, dp(12)));
         exit.setOnClickListener(view -> stop(false));
+        protectControlTouch(exit);
         controls.addView(exit, new LinearLayout.LayoutParams(dp(64), dp(42)));
+        trailToggle = text("轨迹", 13, Color.WHITE, true);
+        trailToggle.setGravity(Gravity.CENTER);
+        trailToggle.setOnClickListener(view -> togglePlaybackTrail());
+        protectControlTouch(trailToggle);
+        updateTrailToggleState();
+        LinearLayout.LayoutParams trailParams = new LinearLayout.LayoutParams(dp(58), dp(42));
+        trailParams.leftMargin = dp(6);
+        controls.addView(trailToggle, trailParams);
 
-        int width = Math.min(dp(360),
+        int width = Math.min(dp(390),
                 service.getResources().getDisplayMetrics().widthPixels - dp(24));
         params = new WindowManager.LayoutParams(
                 width, dp(58), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
@@ -127,6 +157,7 @@ final class ScriptPlaybackOverlay {
                 android.graphics.PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
         params.y = dp(24);
+        showPlaybackTrail();
         windowManager.addView(controls, params);
         if (autoStart) {
             started = true;
@@ -144,6 +175,7 @@ final class ScriptPlaybackOverlay {
     private void beginRun() {
         remainingCountdown = countdownSeconds;
         if (remainingCountdown <= 0) {
+            startExecutionClock();
             runNext();
             return;
         }
@@ -156,10 +188,11 @@ final class ScriptPlaybackOverlay {
         }
         remainingCountdown = remaining;
         if (remaining == 0) {
+            startExecutionClock();
             runNext();
             return;
         }
-        status.setText(remaining + " 秒后回放 · " + loopLabel(name));
+        setStatus(remaining + " 秒后执行");
         handler.postDelayed(() -> countdown(remaining - 1), 1000);
     }
 
@@ -167,25 +200,24 @@ final class ScriptPlaybackOverlay {
         if (!active || paused) {
             return;
         }
-        if (index >= steps.length()) {
+        JSONObject step = retryStep;
+        retryStep = null;
+        if (step == null) {
+            step = nextExecutableStep();
+        }
+        if (step == null) {
             if (repeatCount == 0 || loopIndex + 1 < repeatCount) {
                 loopIndex++;
-                index = 0;
-                status.setText(loopLabel("开始下一轮"));
+                resetPlanCursor();
+                setStatus("继续执行");
                 handler.post(this::runNext);
                 return;
             }
             stop(true);
             return;
         }
-        JSONObject step = steps.optJSONObject(index);
-        index++;
-        if (step == null) {
-            runNext();
-            return;
-        }
-        status.setText(loopLabel("执行 " + index + "/" + steps.length()
-                + " · " + RecordedScript.label(step)));
+        boolean repeatInterval = step.optBoolean("repeatInterval", false);
+        setStatus(repeatInterval ? "等待下一次" : "正在执行");
         if (RecordedScript.DELAY.equals(step.optString("type"))) {
             remainingDelay = Math.max(0,
                     Math.min(600000, step.optLong("duration")));
@@ -199,13 +231,119 @@ final class ScriptPlaybackOverlay {
             stop(false);
             return;
         }
-        accessibility.dispatchRecordedStep(step, this::runNext, () -> {
-            Toast.makeText(service, "第 " + index + " 步执行失败", Toast.LENGTH_LONG).show();
-            stop(false);
+        if (playbackTrail != null) {
+            playbackTrail.show(step);
+        }
+        inFlightStep = step;
+        JSONObject dispatchedStep = step;
+        accessibility.dispatchRecordedStep(step, () -> {
+            if (inFlightStep == dispatchedStep) {
+                inFlightStep = null;
+            }
+            runNext();
+        }, () -> handleGestureCancellation(dispatchedStep));
+    }
+
+    private void handleGestureCancellation(JSONObject cancelledStep) {
+        if (!active || inFlightStep != cancelledStep) {
+            return;
+        }
+        inFlightStep = null;
+        boolean causedByControls = paused
+                || SystemClock.uptimeMillis() - controlTouchUptime < 1000L;
+        if (causedByControls) {
+            // A physical touch on an overlay cancels an accessibility gesture. Keep the
+            // current logical step so pause/toggle/drag never terminates the script.
+            retryStep = cancelledStep;
+            if (!paused) {
+                handler.postDelayed(this::runNext, 80L);
+            }
+            return;
+        }
+        Toast.makeText(service, "本次执行失败", Toast.LENGTH_LONG).show();
+        stop(false);
+    }
+
+    private void protectControlTouch(View control) {
+        control.setOnTouchListener((view, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                markControlTouch();
+            }
+            return false;
         });
     }
 
+    private void markControlTouch() {
+        controlTouchUptime = SystemClock.uptimeMillis();
+    }
+
+    private JSONObject nextExecutableStep() {
+        while (active) {
+            if (repeatedSteps != null) {
+                if (repeatedIndex < repeatedSteps.length()) {
+                    JSONObject nested = repeatedSteps.optJSONObject(repeatedIndex++);
+                    if (nested != null) {
+                        return nested;
+                    }
+                    continue;
+                }
+                if (repeatedRemaining > 1) {
+                    repeatedRemaining--;
+                    repeatedIndex = 0;
+                    if (repeatedIntervalMs > 0) {
+                        try {
+                            return new JSONObject()
+                                    .put("type", RecordedScript.DELAY)
+                                    .put("duration", repeatedIntervalMs)
+                                    .put("repeatInterval", true);
+                        } catch (org.json.JSONException ignored) {
+                            continue;
+                        }
+                    }
+                    continue;
+                }
+                clearRepeatedBlock();
+            }
+            if (index >= steps.length()) {
+                return null;
+            }
+            JSONObject candidate = steps.optJSONObject(index++);
+            if (candidate == null) {
+                continue;
+            }
+            if (!ExecutionPlan.REPEAT_BLOCK.equals(candidate.optString("type"))) {
+                return candidate;
+            }
+            JSONArray nested = candidate.optJSONArray("steps");
+            if (nested == null || nested.length() == 0) {
+                continue;
+            }
+            repeatedSteps = nested;
+            repeatedIndex = 0;
+            repeatedTotal = Math.max(1,
+                    Math.min(9999, candidate.optInt("repeat", 1)));
+            repeatedRemaining = repeatedTotal;
+            repeatedIntervalMs = Math.max(0,
+                    Math.min(600000, candidate.optInt("interval", 0)));
+        }
+        return null;
+    }
+
+    private void resetPlanCursor() {
+        index = 0;
+        clearRepeatedBlock();
+    }
+
+    private void clearRepeatedBlock() {
+        repeatedSteps = null;
+        repeatedIndex = 0;
+        repeatedTotal = 0;
+        repeatedRemaining = 0;
+        repeatedIntervalMs = 0;
+    }
+
     private void pause() {
+        pauseExecutionClock();
         paused = true;
         if (remainingDelay > 0) {
             remainingDelay = Math.max(0,
@@ -214,14 +352,15 @@ final class ScriptPlaybackOverlay {
         handler.removeCallbacksAndMessages(null);
         start.setText("继续");
         start.setBackground(background(0xFF3A4254, dp(12)));
-        status.setText("已暂停 · " + loopLabel(index + "/" + steps.length()));
+        setStatus("已暂停");
     }
 
     private void resume() {
         paused = false;
+        resumeExecutionClock();
         start.setText("暂停");
         start.setBackground(background(0xFF1769FF, dp(12)));
-        status.setText("继续执行 · " + loopLabel(index + "/" + steps.length()));
+        setStatus("继续执行");
         if (remainingCountdown > 0) {
             countdown(remainingCountdown);
         } else if (remainingDelay > 0) {
@@ -232,11 +371,76 @@ final class ScriptPlaybackOverlay {
         }
     }
 
-    private String loopLabel(String detail) {
-        String loops = repeatCount == 0
-                ? "无限循环 · 第 " + (loopIndex + 1) + " 轮"
-                : "第 " + (loopIndex + 1) + "/" + repeatCount + " 轮";
-        return loops + " · " + detail;
+    private String executionLabel(String state) {
+        String count;
+        if (repeatedSteps != null && repeatedTotal > 0) {
+            int current = repeatedTotal - repeatedRemaining + 1;
+            count = current + "/" + repeatedTotal + " 次";
+        } else {
+            count = repeatCount == 0
+                    ? "第 " + (loopIndex + 1) + " 次 · 无限循环"
+                    : (loopIndex + 1) + "/" + repeatCount + " 次";
+        }
+        if (!executionClockStarted) {
+            return state + " · " + count;
+        }
+        return state + " · " + count + " · " + elapsedExecutionMs() / 1000L + "s";
+    }
+
+    private void setStatus(String state) {
+        currentStatusState = state;
+        if (status != null) {
+            status.setText(executionLabel(state));
+        }
+    }
+
+    private void startExecutionClock() {
+        if (executionClockStarted) {
+            return;
+        }
+        executionClockStarted = true;
+        activeSegmentStartedAt = SystemClock.uptimeMillis();
+        scheduleExecutionTimeTick();
+    }
+
+    private void pauseExecutionClock() {
+        if (!executionClockStarted || activeSegmentStartedAt == 0) {
+            return;
+        }
+        accumulatedExecutionMs += SystemClock.uptimeMillis() - activeSegmentStartedAt;
+        activeSegmentStartedAt = 0;
+    }
+
+    private void resumeExecutionClock() {
+        if (!executionClockStarted) {
+            return;
+        }
+        activeSegmentStartedAt = SystemClock.uptimeMillis();
+        scheduleExecutionTimeTick();
+    }
+
+    private long elapsedExecutionMs() {
+        if (activeSegmentStartedAt == 0) {
+            return accumulatedExecutionMs;
+        }
+        return accumulatedExecutionMs + SystemClock.uptimeMillis() - activeSegmentStartedAt;
+    }
+
+    private void tickExecutionTime() {
+        if (!active || paused || !executionClockStarted) {
+            return;
+        }
+        setStatus(currentStatusState);
+        scheduleExecutionTimeTick();
+    }
+
+    private void scheduleExecutionTimeTick() {
+        handler.removeCallbacks(executionTimeTick);
+        if (!active || paused || !executionClockStarted) {
+            return;
+        }
+        long elapsed = elapsedExecutionMs();
+        handler.postDelayed(executionTimeTick, 1000L - elapsed % 1000L);
     }
 
     private void finishDelay() {
@@ -255,6 +459,7 @@ final class ScriptPlaybackOverlay {
             windowManager.removeView(controls);
             controls = null;
         }
+        hidePlaybackTrail();
         Toast.makeText(service, completed ? "录制脚本回放完成" : "已停止回放",
                 Toast.LENGTH_SHORT).show();
         listener.onStopped();
@@ -262,6 +467,7 @@ final class ScriptPlaybackOverlay {
 
     private boolean drag(View view, MotionEvent event) {
         if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            markControlTouch();
             dragDownX = event.getRawX();
             dragDownY = event.getRawY();
             dragStartX = params.x;
@@ -302,5 +508,178 @@ final class ScriptPlaybackOverlay {
 
     private int dp(int value) {
         return Math.round(value * service.getResources().getDisplayMetrics().density);
+    }
+
+    private void showPlaybackTrail() {
+        if (playbackTrail != null || !ClickSettings.playbackShowsTrail(service)) {
+            return;
+        }
+        playbackTrail = new PlaybackTrailView();
+        WindowManager.LayoutParams trailParams = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                android.graphics.PixelFormat.TRANSLUCENT);
+        trailParams.gravity = Gravity.TOP | Gravity.START;
+        windowManager.addView(playbackTrail, trailParams);
+    }
+
+    private void hidePlaybackTrail() {
+        if (playbackTrail == null) {
+            return;
+        }
+        playbackTrail.cancel();
+        windowManager.removeView(playbackTrail);
+        playbackTrail = null;
+    }
+
+    private void togglePlaybackTrail() {
+        boolean show = !ClickSettings.playbackShowsTrail(service);
+        ClickSettings.setPlaybackShowsTrail(service, show);
+        if (show) {
+            showPlaybackTrail();
+        } else {
+            hidePlaybackTrail();
+        }
+        updateTrailToggleState();
+    }
+
+    private void updateTrailToggleState() {
+        if (trailToggle == null) {
+            return;
+        }
+        boolean enabled = ClickSettings.playbackShowsTrail(service);
+        trailToggle.setBackground(background(enabled ? 0xFF1769FF : 0xFF3A4254, dp(12)));
+        trailToggle.setContentDescription("回放轨迹，当前已" + (enabled ? "开启" : "关闭"));
+        trailToggle.setSelected(enabled);
+    }
+
+    /** Animates the saved path without receiving input or changing playback timing. */
+    private final class PlaybackTrailView extends View {
+        private final Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint touchPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint pulsePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path source = new Path();
+        private final Path visiblePath = new Path();
+        private final PathMeasure measure = new PathMeasure();
+        private final float[] position = new float[2];
+        private ValueAnimator animator;
+        private boolean tap;
+        private boolean visible;
+        private int animationGeneration;
+        private float animationProgress;
+
+        PlaybackTrailView() {
+            super(service);
+            linePaint.setColor(Color.argb(170, 255, 45, 45));
+            linePaint.setStyle(Paint.Style.STROKE);
+            linePaint.setStrokeWidth(dp(5));
+            linePaint.setStrokeCap(Paint.Cap.ROUND);
+            linePaint.setStrokeJoin(Paint.Join.ROUND);
+            touchPaint.setColor(Color.argb(105, 255, 35, 35));
+            touchPaint.setStyle(Paint.Style.FILL);
+            pulsePaint.setColor(Color.rgb(255, 45, 45));
+            pulsePaint.setStyle(Paint.Style.STROKE);
+            pulsePaint.setStrokeWidth(dp(3));
+        }
+
+        void show(JSONObject step) {
+            cancel();
+            int currentGeneration = ++animationGeneration;
+            int width = service.getResources().getDisplayMetrics().widthPixels;
+            int height = service.getResources().getDisplayMetrics().heightPixels;
+            tap = RecordedScript.TAP.equals(step.optString("type"));
+            source.reset();
+            if (tap) {
+                position[0] = scale(step.optDouble("x"), width);
+                position[1] = scale(step.optDouble("y"), height);
+                source.moveTo(position[0], position[1]);
+            } else {
+                JSONArray points = step.optJSONArray("points");
+                if (points == null || points.length() < 2) {
+                    return;
+                }
+                for (int i = 0; i < points.length(); i++) {
+                    JSONArray point = points.optJSONArray(i);
+                    if (point == null || point.length() < 2) {
+                        continue;
+                    }
+                    float x = scale(point.optDouble(0), width);
+                    float y = scale(point.optDouble(1), height);
+                    if (i == 0) {
+                        source.moveTo(x, y);
+                    } else {
+                        source.lineTo(x, y);
+                    }
+                }
+            }
+            measure.setPath(source, false);
+            visiblePath.reset();
+            visible = true;
+            long defaultDuration = tap ? 48L : 180L;
+            long duration = Math.max(tap ? 32L : 80L, Math.min(60000L,
+                    step.optLong("duration", defaultDuration)));
+            animator = ValueAnimator.ofFloat(0f, 1f);
+            animator.setDuration(duration);
+            animator.addUpdateListener(value -> {
+                float progress = (float) value.getAnimatedValue();
+                animationProgress = progress;
+                visiblePath.reset();
+                if (!tap) {
+                    float distance = measure.getLength() * progress;
+                    measure.getSegment(0, distance, visiblePath, true);
+                    measure.getPosTan(distance, position, null);
+                }
+                invalidate();
+            });
+            animator.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override
+                public void onAnimationEnd(android.animation.Animator animation) {
+                    postDelayed(() -> {
+                        if (currentGeneration == animationGeneration) {
+                            visible = false;
+                            invalidate();
+                        }
+                    }, 180L);
+                }
+            });
+            animator.start();
+        }
+
+        void cancel() {
+            animationGeneration++;
+            if (animator != null) {
+                animator.cancel();
+                animator = null;
+            }
+            visible = false;
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (!visible) {
+                return;
+            }
+            if (tap) {
+                pulsePaint.setAlpha(Math.max(0,
+                        Math.round(210 * (1f - animationProgress))));
+                canvas.drawCircle(position[0], position[1],
+                        dp(8) + dp(22) * animationProgress, pulsePaint);
+                canvas.drawCircle(position[0], position[1], dp(5), touchPaint);
+            } else {
+                canvas.drawPath(visiblePath, linePaint);
+                canvas.drawCircle(position[0], position[1], dp(11), touchPaint);
+                canvas.drawCircle(position[0], position[1], dp(4), linePaint);
+            }
+        }
+    }
+
+    private static float scale(double normalized, int size) {
+        return (float) Math.max(0, Math.min(size - 1, normalized * size));
     }
 }

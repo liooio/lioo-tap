@@ -19,6 +19,7 @@ final class GroupScript {
             item.put("recordId", recording.id);
             item.put("name", recording.name);
             item.put("repeat", 1);
+            item.put("interval", 0);
         } catch (JSONException ignored) {
             // JSONObject backed by memory should not reject these values.
         }
@@ -31,7 +32,11 @@ final class GroupScript {
     }
 
     static int repeat(JSONObject item) {
-        return Math.max(1, Math.min(99, item.optInt("repeat", 1)));
+        return Math.max(1, Math.min(9999, item.optInt("repeat", 1)));
+    }
+
+    static int intervalMs(JSONObject item) {
+        return Math.max(0, Math.min(600000, item.optInt("interval", 0)));
     }
 
     static Library.Entry resolve(Context context, JSONObject item) {
@@ -67,14 +72,17 @@ final class GroupScript {
     }
 
     static int expandedStepCount(Context context, JSONArray sequence) {
-        int total = 0;
+        long total = 0;
         for (int i = 0; i < sequence.length(); i++) {
             JSONObject item = sequence.optJSONObject(i);
             Library.Entry recording = item == null ? null : resolve(context, item);
             if (recording != null) {
-                total += recording.stepCount() * repeat(item);
+                total += (long) recording.stepCount() * repeat(item);
+                if (total >= Integer.MAX_VALUE) {
+                    return Integer.MAX_VALUE;
+                }
             }
         }
-        return total;
+        return (int) total;
     }
 }

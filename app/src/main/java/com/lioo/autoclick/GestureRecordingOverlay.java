@@ -1,8 +1,12 @@
 package com.lioo.autoclick;
 
+import android.animation.ValueAnimator;
 import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PathMeasure;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
@@ -43,11 +47,14 @@ final class GestureRecordingOverlay {
     private final List<WindowManager.LayoutParams> captureParams = new ArrayList<>();
 
     private final List<View> captures = new ArrayList<>();
+    private GestureTrailView gestureTrail;
     private LinearLayout controls;
     private TextView status;
     private TextView primary;
     private TextView secondary;
     private TextView tertiary;
+    private LinearLayout settingsPanel;
+    private WindowManager.LayoutParams settingsParams;
     private WindowManager.LayoutParams controlParams;
     private float dragDownX;
     private float dragDownY;
@@ -111,6 +118,9 @@ final class GestureRecordingOverlay {
         addAction(primary);
         addAction(secondary);
         addAction(tertiary);
+        TextView settings = action("设置", 0xFF3A4254);
+        settings.setOnClickListener(view -> showPlaybackSettings());
+        addAction(settings);
 
         int width = Math.min(dp(390),
                 service.getResources().getDisplayMetrics().widthPixels - dp(24));
@@ -143,6 +153,9 @@ final class GestureRecordingOverlay {
         // Wait until the start button has finished receiving its touch sequence.
         handler.post(() -> {
             if (active && recording) {
+                if (ClickSettings.recordingShowsTrail(service)) {
+                    showGestureTrail();
+                }
                 ensureCapture();
             }
         });
@@ -154,6 +167,7 @@ final class GestureRecordingOverlay {
         }
         recording = false;
         removeCapture();
+        hideGestureTrail();
         primary.setText("开始");
         primary.setAlpha(1f);
         status.setText("已暂停 · " + actionCount() + " 步");
@@ -177,11 +191,13 @@ final class GestureRecordingOverlay {
         }
         recording = false;
         removeCapture();
+        hideGestureTrail();
         showCompletedActions();
     }
 
     private void showCompletedActions() {
         replaying = false;
+        hideGestureTrail();
         status.setText("录制完成 · " + actionCount() + " 步");
         primary.setText("回放");
         primary.setEnabled(true);
@@ -220,6 +236,9 @@ final class GestureRecordingOverlay {
         secondary.setEnabled(false);
         tertiary.setAlpha(0.45f);
         tertiary.setEnabled(false);
+        if (ClickSettings.playbackShowsTrail(service)) {
+            showGestureTrail();
+        }
         countdownReplay(ClickSettings.playbackCountdownSeconds(service));
     }
 
@@ -272,6 +291,9 @@ final class GestureRecordingOverlay {
             Toast.makeText(service, "无障碍服务已断开", Toast.LENGTH_LONG).show();
             stopReplay();
             return;
+        }
+        if (gestureTrail != null) {
+            gestureTrail.play(step);
         }
         accessibility.dispatchRecordedStep(step, this::replayNext, () -> {
             Toast.makeText(service, "第 " + replayIndex + " 步回放失败",
@@ -338,6 +360,173 @@ final class GestureRecordingOverlay {
         captureAdded = false;
     }
 
+    private void showPlaybackSettings() {
+        if (settingsPanel != null || replaying) {
+            return;
+        }
+        removeCapture();
+        if (gestureTrail != null) {
+            gestureTrail.clear();
+        }
+        settingsPanel = new LinearLayout(service);
+        settingsPanel.setOrientation(LinearLayout.VERTICAL);
+        settingsPanel.setPadding(dp(18), dp(16), dp(18), dp(16));
+        settingsPanel.setBackground(background(0xFA1B1E2C, dp(18)));
+        settingsPanel.addView(text("回放基础设置", 16, Color.WHITE, true));
+        TextView hint = text("延时 0 秒立即开始，次数 0 表示无限循环", 12,
+                0xFFBCC6D8, false);
+        LinearLayout.LayoutParams hintParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        hintParams.topMargin = dp(4);
+        hintParams.bottomMargin = dp(10);
+        settingsPanel.addView(hint, hintParams);
+
+        TextView delayValue = valueText(ClickSettings.playbackCountdownSeconds(service));
+        TextView repeatValue = valueText(ClickSettings.playbackRepeatCount(service));
+        TextView recordingTrailValue = toggleValue(
+                ClickSettings.recordingShowsTrail(service));
+        TextView playbackTrailValue = toggleValue(
+                ClickSettings.playbackShowsTrail(service));
+        settingsPanel.addView(settingRow("开始延时（秒）", delayValue, 0, 10));
+        settingsPanel.addView(settingRow("回放次数", repeatValue, 0, 9999));
+        settingsPanel.addView(toggleRow("录制显示轨迹", recordingTrailValue));
+        settingsPanel.addView(toggleRow("回放显示轨迹", playbackTrailValue));
+
+        LinearLayout actions = new LinearLayout(service);
+        actions.setGravity(Gravity.END);
+        TextView cancel = action("取消", 0xFF3A4254);
+        cancel.setOnClickListener(view -> closePlaybackSettings(
+                false, delayValue, repeatValue, recordingTrailValue, playbackTrailValue));
+        actions.addView(cancel, new LinearLayout.LayoutParams(dp(72), dp(42)));
+        TextView save = action("保存", 0xFF1769FF);
+        save.setOnClickListener(view -> closePlaybackSettings(
+                true, delayValue, repeatValue, recordingTrailValue, playbackTrailValue));
+        LinearLayout.LayoutParams saveParams = new LinearLayout.LayoutParams(dp(72), dp(42));
+        saveParams.leftMargin = dp(8);
+        actions.addView(save, saveParams);
+        LinearLayout.LayoutParams actionsParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        actionsParams.topMargin = dp(12);
+        settingsPanel.addView(actions, actionsParams);
+
+        settingsParams = new WindowManager.LayoutParams(
+                Math.min(dp(330), service.getResources().getDisplayMetrics().widthPixels - dp(32)),
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                android.graphics.PixelFormat.TRANSLUCENT);
+        settingsParams.gravity = Gravity.CENTER;
+        windowManager.addView(settingsPanel, settingsParams);
+    }
+
+    private LinearLayout settingRow(String label, TextView value, int min, int max) {
+        LinearLayout row = new LinearLayout(service);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(5), 0, dp(5));
+        row.addView(text(label, 13, Color.WHITE, true), new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        TextView minus = action("−", 0xFF3A4254);
+        minus.setOnClickListener(view -> adjustValue(value, -1, min, max));
+        row.addView(minus, new LinearLayout.LayoutParams(dp(42), dp(38)));
+        row.addView(value, new LinearLayout.LayoutParams(dp(64), dp(38)));
+        TextView plus = action("+", 0xFF3A4254);
+        plus.setOnClickListener(view -> adjustValue(value, 1, min, max));
+        row.addView(plus, new LinearLayout.LayoutParams(dp(42), dp(38)));
+        return row;
+    }
+
+    private TextView valueText(int value) {
+        TextView view = text(String.valueOf(value), 15, Color.WHITE, true);
+        view.setGravity(Gravity.CENTER);
+        return view;
+    }
+
+    private TextView toggleValue(boolean enabled) {
+        TextView view = action(enabled ? "开启" : "关闭",
+                enabled ? 0xFF1769FF : 0xFF3A4254);
+        view.setTag(enabled);
+        view.setOnClickListener(ignored -> {
+            boolean next = !Boolean.TRUE.equals(view.getTag());
+            view.setTag(next);
+            view.setText(next ? "开启" : "关闭");
+            view.setBackground(background(next ? 0xFF1769FF : 0xFF3A4254, dp(12)));
+        });
+        return view;
+    }
+
+    private LinearLayout toggleRow(String label, TextView value) {
+        LinearLayout row = new LinearLayout(service);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(5), 0, dp(5));
+        row.addView(text(label, 13, Color.WHITE, true), new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        row.addView(value, new LinearLayout.LayoutParams(dp(72), dp(38)));
+        return row;
+    }
+
+    private void adjustValue(TextView value, int delta, int min, int max) {
+        int current;
+        try {
+            current = Integer.parseInt(value.getText().toString());
+        } catch (NumberFormatException ignored) {
+            current = min;
+        }
+        value.setText(String.valueOf(Math.max(min, Math.min(max, current + delta))));
+    }
+
+    private void closePlaybackSettings(boolean save, TextView delay, TextView repeat,
+            TextView recordingTrail, TextView playbackTrail) {
+        if (save) {
+            ClickSettings.savePlayback(service,
+                    Integer.parseInt(delay.getText().toString()),
+                    Integer.parseInt(repeat.getText().toString()),
+                    Boolean.TRUE.equals(recordingTrail.getTag()),
+                    Boolean.TRUE.equals(playbackTrail.getTag()));
+            Toast.makeText(service, "回放设置已保存", Toast.LENGTH_SHORT).show();
+        }
+        if (settingsPanel != null) {
+            windowManager.removeView(settingsPanel);
+            settingsPanel = null;
+            settingsParams = null;
+        }
+        if (active && recording) {
+            if (ClickSettings.recordingShowsTrail(service)) {
+                showGestureTrail();
+            } else {
+                hideGestureTrail();
+            }
+            ensureCapture();
+        }
+    }
+
+    private void showGestureTrail() {
+        if (gestureTrail != null) {
+            return;
+        }
+        gestureTrail = new GestureTrailView(service);
+        WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                        | WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                android.graphics.PixelFormat.TRANSLUCENT);
+        params.gravity = Gravity.TOP | Gravity.START;
+        captureWindowManager.addView(gestureTrail, params);
+    }
+
+    private void hideGestureTrail() {
+        if (gestureTrail == null) {
+            return;
+        }
+        captureWindowManager.removeViewImmediate(gestureTrail);
+        gestureTrail = null;
+    }
+
     private boolean onTouch(View view, MotionEvent event) {
         if (!active || !recording || injecting) {
             return true;
@@ -348,12 +537,18 @@ final class GestureRecordingOverlay {
                     || event.getPointerCount() != 1;
             if (ignoreTouchSequence) {
                 points.clear();
+                if (gestureTrail != null) {
+                    gestureTrail.clear();
+                }
                 return true;
             }
             long now = SystemClock.uptimeMillis();
             pendingDelayMs = lastInjectedAt > 0 ? Math.max(0, now - lastInjectedAt) : 0;
             points.clear();
             points.add(new float[] {event.getRawX(), event.getRawY()});
+            if (gestureTrail != null) {
+                gestureTrail.start(event.getRawX(), event.getRawY());
+            }
             downTime = event.getEventTime();
             lastPointTime = downTime;
             return true;
@@ -367,19 +562,31 @@ final class GestureRecordingOverlay {
         if (event.getPointerCount() != 1) {
             ignoreTouchSequence = true;
             points.clear();
+            if (gestureTrail != null) {
+                gestureTrail.clear();
+            }
             return true;
         }
         if (action == MotionEvent.ACTION_MOVE) {
             addPoint(event.getRawX(), event.getRawY(), event.getEventTime(), false);
+            if (gestureTrail != null) {
+                gestureTrail.add(event.getRawX(), event.getRawY());
+            }
             return true;
         }
         if (action == MotionEvent.ACTION_UP) {
             addPoint(event.getRawX(), event.getRawY(), event.getEventTime(), true);
+            if (gestureTrail != null) {
+                gestureTrail.add(event.getRawX(), event.getRawY());
+            }
             recordGesture(Math.max(1L, event.getEventTime() - downTime));
             return true;
         }
         if (action == MotionEvent.ACTION_CANCEL) {
             points.clear();
+            if (gestureTrail != null) {
+                gestureTrail.clear();
+            }
             return true;
         }
         return true;
@@ -449,6 +656,15 @@ final class GestureRecordingOverlay {
         try {
             RecordedGesture gesture = RecordedGesture.create(rawPoints, duration,
                     delayBefore, screenWidth, screenHeight, tapThreshold);
+            if (gestureTrail != null) {
+                gestureTrail.finish(gesture.tap);
+            }
+            // The captured gesture is the source of truth for recording. Accessibility
+            // mirroring can be cancelled by the target app, especially for long drags;
+            // that must not silently discard an otherwise complete recorded step.
+            recordedGestures.add(gesture);
+            recordedActionCount++;
+            updateStatus();
             // Two display frames are enough for InputDispatcher to observe window removal
             // without imposing the former fixed 100 ms dead period on every operation.
             handler.postDelayed(() -> dispatchPreparedGesture(
@@ -467,22 +683,22 @@ final class GestureRecordingOverlay {
                 || currentMirror != mirrorGeneration) {
             return;
         }
-        long timeoutMs = Math.min(65000L,
-                Math.max(2000L, gesture.duration + 2000L));
+        // Recording already consumed the user's real gesture duration. Keep only the
+        // live mirror short so a slow drag does not block the next input for seconds.
+        // The saved step still retains gesture.duration for normal playback.
+        long mirrorDuration = gesture.tap ? gesture.duration
+                : Math.min(gesture.duration, 120L);
+        long timeoutMs = Math.max(2000L, mirrorDuration + 2000L);
         handler.postDelayed(() -> {
             if (active && injecting && currentMirror == mirrorGeneration) {
                 restoreCapture(currentMirror);
                 Toast.makeText(service, "手势回放超时，已恢复录制", Toast.LENGTH_SHORT).show();
             }
         }, timeoutMs);
-        accessibility.dispatchRecordedPath(gesture.path, gesture.tap, gesture.duration,
+        accessibility.dispatchRecordedPath(gesture.path, gesture.tap, mirrorDuration,
                 () -> {
                     if (currentMirror != mirrorGeneration) {
                         return;
-                    }
-                    if (active) {
-                        recordedGestures.add(gesture);
-                        recordedActionCount++;
                     }
                     restoreCapture(currentMirror);
                     if (active && finishRequested) {
@@ -512,7 +728,9 @@ final class GestureRecordingOverlay {
                         }
                     }
                     if (active && recording) {
-                        Toast.makeText(service, "这次点击未落到目标界面，已跳过",
+                        Toast.makeText(service, gesture.tap
+                                        ? "点击已记录，但目标界面未响应"
+                                        : "滑动已记录，但目标界面未响应",
                                 Toast.LENGTH_SHORT).show();
                     }
                 });
@@ -627,6 +845,12 @@ final class GestureRecordingOverlay {
             accessibility.cancelPendingGestures();
         }
         removeCapture();
+        hideGestureTrail();
+        if (settingsPanel != null) {
+            windowManager.removeView(settingsPanel);
+            settingsPanel = null;
+            settingsParams = null;
+        }
         if (controls != null) {
             windowManager.removeView(controls);
         }
@@ -688,6 +912,192 @@ final class GestureRecordingOverlay {
         return Math.max(0d, Math.min(1d, coordinate / Math.max(1d, size)));
     }
 
+    private static float scale(double normalized, int size) {
+        return (float) Math.max(0, Math.min(size - 1, normalized * size));
+    }
+
+    /** Visual feedback only; this window never receives or blocks touch input. */
+    private final class GestureTrailView extends View {
+        private final Paint linePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint touchPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint pulsePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path trail = new Path();
+        private final Path playbackSource = new Path();
+        private final PathMeasure playbackMeasure = new PathMeasure();
+        private final float[] playbackPosition = new float[2];
+        private final Runnable clearTrail = this::clear;
+        private float touchX;
+        private float touchY;
+        private boolean visible;
+        private boolean tapPulse;
+        private float pulseProgress;
+        private ValueAnimator pulseAnimator;
+        private ValueAnimator playbackAnimator;
+
+        GestureTrailView(Context context) {
+            super(context);
+            linePaint.setColor(Color.argb(170, 255, 45, 45));
+            linePaint.setStyle(Paint.Style.STROKE);
+            linePaint.setStrokeWidth(dp(5));
+            linePaint.setStrokeCap(Paint.Cap.ROUND);
+            linePaint.setStrokeJoin(Paint.Join.ROUND);
+            touchPaint.setColor(Color.argb(105, 255, 35, 35));
+            touchPaint.setStyle(Paint.Style.FILL);
+            pulsePaint.setColor(Color.rgb(255, 45, 45));
+            pulsePaint.setStyle(Paint.Style.STROKE);
+            pulsePaint.setStrokeWidth(dp(3));
+        }
+
+        void start(float x, float y) {
+            removeCallbacks(clearTrail);
+            cancelAnimations();
+            trail.reset();
+            trail.moveTo(x, y);
+            touchX = x;
+            touchY = y;
+            visible = true;
+            tapPulse = false;
+            invalidate();
+        }
+
+        void add(float x, float y) {
+            if (!visible) {
+                start(x, y);
+                return;
+            }
+            trail.lineTo(x, y);
+            touchX = x;
+            touchY = y;
+            invalidate();
+        }
+
+        void finish(boolean tap) {
+            removeCallbacks(clearTrail);
+            if (!tap) {
+                postDelayed(clearTrail, 180L);
+                return;
+            }
+            tapPulse = true;
+            trail.reset();
+            if (pulseAnimator != null) {
+                pulseAnimator.cancel();
+            }
+            pulseAnimator = ValueAnimator.ofFloat(0f, 1f);
+            pulseAnimator.setDuration(320L);
+            pulseAnimator.addUpdateListener(value -> {
+                pulseProgress = (float) value.getAnimatedValue();
+                invalidate();
+            });
+            pulseAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override
+                public void onAnimationEnd(android.animation.Animator animation) {
+                    clear();
+                }
+            });
+            pulseAnimator.start();
+        }
+
+        void clear() {
+            visible = false;
+            tapPulse = false;
+            trail.reset();
+            invalidate();
+        }
+
+        void play(JSONObject step) {
+            removeCallbacks(clearTrail);
+            cancelAnimations();
+            int width = service.getResources().getDisplayMetrics().widthPixels;
+            int height = service.getResources().getDisplayMetrics().heightPixels;
+            boolean playbackTap = RecordedScript.TAP.equals(step.optString("type"));
+            playbackSource.reset();
+            if (playbackTap) {
+                playbackPosition[0] = scale(step.optDouble("x"), width);
+                playbackPosition[1] = scale(step.optDouble("y"), height);
+                playbackSource.moveTo(playbackPosition[0], playbackPosition[1]);
+            } else {
+                JSONArray playbackPoints = step.optJSONArray("points");
+                if (playbackPoints == null || playbackPoints.length() < 2) {
+                    return;
+                }
+                for (int i = 0; i < playbackPoints.length(); i++) {
+                    JSONArray point = playbackPoints.optJSONArray(i);
+                    if (point == null || point.length() < 2) {
+                        continue;
+                    }
+                    float x = scale(point.optDouble(0), width);
+                    float y = scale(point.optDouble(1), height);
+                    if (i == 0) {
+                        playbackSource.moveTo(x, y);
+                    } else {
+                        playbackSource.lineTo(x, y);
+                    }
+                }
+            }
+            playbackMeasure.setPath(playbackSource, false);
+            trail.reset();
+            visible = true;
+            tapPulse = playbackTap;
+            long defaultDuration = playbackTap ? 48L : 180L;
+            long duration = Math.max(playbackTap ? 32L : 80L, Math.min(60000L,
+                    step.optLong("duration", defaultDuration)));
+            playbackAnimator = ValueAnimator.ofFloat(0f, 1f);
+            playbackAnimator.setDuration(duration);
+            playbackAnimator.addUpdateListener(value -> {
+                float progress = (float) value.getAnimatedValue();
+                pulseProgress = progress;
+                if (!playbackTap) {
+                    float distance = playbackMeasure.getLength() * progress;
+                    trail.reset();
+                    playbackMeasure.getSegment(0, distance, trail, true);
+                    playbackMeasure.getPosTan(distance, playbackPosition, null);
+                    touchX = playbackPosition[0];
+                    touchY = playbackPosition[1];
+                } else {
+                    touchX = playbackPosition[0];
+                    touchY = playbackPosition[1];
+                }
+                invalidate();
+            });
+            playbackAnimator.addListener(new android.animation.AnimatorListenerAdapter() {
+                @Override
+                public void onAnimationEnd(android.animation.Animator animation) {
+                    postDelayed(clearTrail, 180L);
+                }
+            });
+            playbackAnimator.start();
+        }
+
+        private void cancelAnimations() {
+            if (pulseAnimator != null) {
+                pulseAnimator.cancel();
+                pulseAnimator = null;
+            }
+            if (playbackAnimator != null) {
+                playbackAnimator.cancel();
+                playbackAnimator = null;
+            }
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            if (!visible) {
+                return;
+            }
+            if (tapPulse) {
+                pulsePaint.setAlpha(Math.max(0, Math.round(210 * (1f - pulseProgress))));
+                canvas.drawCircle(touchX, touchY,
+                        dp(8) + dp(22) * pulseProgress, pulsePaint);
+                canvas.drawCircle(touchX, touchY, dp(5), touchPaint);
+            } else {
+                canvas.drawPath(trail, linePaint);
+                canvas.drawCircle(touchX, touchY, dp(11), touchPaint);
+                canvas.drawCircle(touchX, touchY, dp(4), linePaint);
+            }
+        }
+    }
+
     private TextView text(String value, int sp, int color, boolean bold) {
         TextView view = new TextView(service);
         view.setText(value);
@@ -706,7 +1116,7 @@ final class GestureRecordingOverlay {
     }
 
     private void addAction(TextView action) {
-        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(dp(64), dp(42));
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(dp(56), dp(42));
         actionParams.leftMargin = dp(6);
         controls.addView(action, actionParams);
     }

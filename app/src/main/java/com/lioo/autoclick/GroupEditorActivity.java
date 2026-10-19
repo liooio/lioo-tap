@@ -3,6 +3,9 @@ package com.lioo.autoclick;
 import android.app.Activity;
 import android.content.ClipData;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.DragEvent;
 import android.view.Gravity;
 import android.view.View;
@@ -65,7 +68,7 @@ public final class GroupEditorActivity extends Activity {
         hero.setBackground(Ui.round(this, Ui.SOFT_PURPLE, 18));
         hero.addView(Ui.text(this, "组合录制脚本", 20, Ui.INK, true));
         TextView description = Ui.text(this,
-                "按顺序执行多个录制，可为每一项单独设置循环次数。",
+                "按顺序执行多个录制，可为每一项单独设置循环次数和间隔。",
                 13, Ui.MUTED, false);
         Ui.gap(hero, this, description, 6);
         summary = Ui.text(this, "", 13, Ui.PURPLE, true);
@@ -174,7 +177,8 @@ public final class GroupEditorActivity extends Activity {
         TextView meta = Ui.text(this,
                 recording == null ? "无法执行，请删除此项"
                         : recording.stepCount() + " 个步骤 · 循环 "
-                                + GroupScript.repeat(item) + " 次",
+                                + GroupScript.repeat(item) + " 次 · 间隔 "
+                                + GroupScript.intervalMs(item) + " ms",
                 12, Ui.MUTED, false);
         Ui.gap(titleBox, this, meta, 3);
         LinearLayout.LayoutParams titleParams = new LinearLayout.LayoutParams(
@@ -201,11 +205,9 @@ public final class GroupEditorActivity extends Activity {
                         LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         controls.addView(repeatButton("−", item, -1),
                 new LinearLayout.LayoutParams(Ui.dp(this, 40), Ui.dp(this, 40)));
-        TextView repeat = Ui.text(this, String.valueOf(GroupScript.repeat(item)),
-                15, Ui.INK, true);
-        repeat.setGravity(Gravity.CENTER);
+        EditText repeat = repeatInput(item);
         controls.addView(repeat, new LinearLayout.LayoutParams(
-                Ui.dp(this, 46), Ui.dp(this, 40)));
+                Ui.dp(this, 70), Ui.dp(this, 40)));
         controls.addView(repeatButton("+", item, 1),
                 new LinearLayout.LayoutParams(Ui.dp(this, 40), Ui.dp(this, 40)));
         TextView delete = Ui.text(this, "删除", 13, Ui.ERROR, true);
@@ -222,7 +224,99 @@ public final class GroupEditorActivity extends Activity {
         deleteParams.leftMargin = Ui.dp(this, 8);
         controls.addView(delete, deleteParams);
         Ui.gap(card, this, controls, 16);
+
+        LinearLayout intervalRow = new LinearLayout(this);
+        intervalRow.setGravity(Gravity.CENTER_VERTICAL);
+        intervalRow.addView(Ui.text(this, "循环间隔（毫秒）", 13, Ui.MUTED, true),
+                new LinearLayout.LayoutParams(0,
+                        LinearLayout.LayoutParams.WRAP_CONTENT, 1));
+        EditText interval = intervalInput(item);
+        intervalRow.addView(interval, new LinearLayout.LayoutParams(
+                Ui.dp(this, 132), Ui.dp(this, 46)));
+        Ui.gap(card, this, intervalRow, 10);
         return card;
+    }
+
+    private EditText intervalInput(JSONObject item) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(String.valueOf(GroupScript.intervalMs(item)));
+        input.setSelectAllOnFocus(true);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setTextSize(15);
+        input.setTextColor(Ui.INK);
+        input.setGravity(Gravity.CENTER);
+        input.setPadding(Ui.dp(this, 10), 0, Ui.dp(this, 10), 0);
+        input.setBackground(Ui.stroke(this, Ui.FIELD, 10, Ui.OUTLINE));
+        input.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence value, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence value, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable value) {
+                if (value.length() == 0) {
+                    return;
+                }
+                try {
+                    long parsed = Long.parseLong(value.toString());
+                    item.put("interval", Math.max(0, Math.min(600000, parsed)));
+                } catch (NumberFormatException | JSONException ignored) {
+                    // Invalid input is normalized when the editor loses focus.
+                }
+            }
+        });
+        input.setOnFocusChangeListener((view, hasFocus) -> {
+            if (!hasFocus) {
+                input.setText(String.valueOf(GroupScript.intervalMs(item)));
+            }
+        });
+        return input;
+    }
+
+    private EditText repeatInput(JSONObject item) {
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setText(String.valueOf(GroupScript.repeat(item)));
+        input.setSelectAllOnFocus(true);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setTextSize(15);
+        input.setTextColor(Ui.INK);
+        input.setGravity(Gravity.CENTER);
+        input.setPadding(Ui.dp(this, 4), 0, Ui.dp(this, 4), 0);
+        input.setBackgroundColor(android.graphics.Color.TRANSPARENT);
+        input.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence value, int start, int count, int after) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence value, int start, int before, int count) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable value) {
+                if (value.length() == 0) {
+                    return;
+                }
+                try {
+                    long parsed = Long.parseLong(value.toString());
+                    item.put("repeat", Math.max(1, Math.min(9999, parsed)));
+                } catch (NumberFormatException | JSONException ignored) {
+                    // Invalid input is normalized when the editor loses focus.
+                }
+            }
+        });
+        input.setOnFocusChangeListener((view, hasFocus) -> {
+            if (!hasFocus) {
+                input.setText(String.valueOf(GroupScript.repeat(item)));
+            }
+        });
+        return input;
     }
 
     private TextView repeatButton(String label, JSONObject item, int delta) {
@@ -232,7 +326,7 @@ public final class GroupEditorActivity extends Activity {
         button.setOnClickListener(view -> {
             try {
                 item.put("repeat", Math.max(1,
-                        Math.min(99, GroupScript.repeat(item) + delta)));
+                        Math.min(9999, GroupScript.repeat(item) + delta)));
             } catch (JSONException ignored) {
                 return;
             }

@@ -48,14 +48,39 @@ final class ClickSettings {
     }
 
     static int playbackRepeatCount(Context context) {
-        return Math.max(0, Math.min(999,
+        return Math.max(0, Math.min(9999,
                 preferences(context).getInt("playback_repeat", 1)));
     }
 
+    static boolean playbackShowsTrail(Context context) {
+        return preferences(context).getBoolean("playback_show_trail", true);
+    }
+
+    static boolean recordingShowsTrail(Context context) {
+        return preferences(context).getBoolean("recording_show_trail", true);
+    }
+
+    static void setPlaybackShowsTrail(Context context, boolean show) {
+        preferences(context).edit().putBoolean("playback_show_trail", show).apply();
+    }
+
     static void savePlayback(Context context, int countdownSeconds, int repeatCount) {
+        savePlayback(context, countdownSeconds, repeatCount, playbackShowsTrail(context));
+    }
+
+    static void savePlayback(Context context, int countdownSeconds, int repeatCount,
+            boolean showTrail) {
+        savePlayback(context, countdownSeconds, repeatCount,
+                recordingShowsTrail(context), showTrail);
+    }
+
+    static void savePlayback(Context context, int countdownSeconds, int repeatCount,
+            boolean recordingShowTrail, boolean playbackShowTrail) {
         preferences(context).edit()
                 .putInt("playback_countdown", Math.max(0, Math.min(10, countdownSeconds)))
-                .putInt("playback_repeat", Math.max(0, Math.min(999, repeatCount)))
+                .putInt("playback_repeat", Math.max(0, Math.min(9999, repeatCount)))
+                .putBoolean("recording_show_trail", recordingShowTrail)
+                .putBoolean("playback_show_trail", playbackShowTrail)
                 .apply();
     }
 

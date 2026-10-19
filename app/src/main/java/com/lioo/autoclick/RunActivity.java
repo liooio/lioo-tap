@@ -120,7 +120,8 @@ public final class RunActivity extends Activity {
             TextView detail = Ui.text(this, group
                     ? (groupRecording == null ? "无法执行"
                             : groupRecording.stepCount() + " 个步骤 · 循环 "
-                                    + GroupScript.repeat(command) + " 次")
+                                    + GroupScript.repeat(command) + " 次 · 间隔 "
+                                    + GroupScript.intervalMs(command) + " ms")
                     : (recorded ? RecordedScript.detail(command)
                             : command.optString("detail")),
                     13, Ui.MUTED, false);
@@ -179,13 +180,13 @@ public final class RunActivity extends Activity {
                     playbackCountdownInput.getText().toString().trim());
             int repeat = Integer.parseInt(
                     playbackRepeatInput.getText().toString().trim());
-            if (countdown < 0 || countdown > 10 || repeat < 0 || repeat > 999) {
+            if (countdown < 0 || countdown > 10 || repeat < 0 || repeat > 9999) {
                 throw new NumberFormatException();
             }
             ClickSettings.savePlayback(this, countdown, repeat);
             return true;
         } catch (NumberFormatException exception) {
-            Toast.makeText(this, "倒计时 0–10 秒，次数 0–999，0 表示无限循环",
+            Toast.makeText(this, "倒计时 0–10 秒，次数 0–9999，0 表示无限循环",
                     Toast.LENGTH_SHORT).show();
             return false;
         }

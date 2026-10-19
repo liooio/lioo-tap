@@ -4,6 +4,9 @@ import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.SystemClock;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -20,6 +23,8 @@ final class OverlayController {
     private final DisplayMetrics displayMetrics;
     private final ClickEditorOverlay clickEditor;
     private final ClickCountOverlay clickCount;
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private final Runnable executionTimeTick = this::updateExecutionTime;
     private ClickerToolboxView clickerPanel;
     private OutsideTouchLayout controls;
     private LogoBallView toolbox;
@@ -31,6 +36,10 @@ final class OverlayController {
     private WindowManager.LayoutParams counterParams;
     private final List<FloatingShortcut> floatingShortcuts = new ArrayList<>();
     private boolean ballOnRight = false;
+    private boolean clickerRunning;
+    private long clickerStartedAt;
+    private int completedClicks;
+    private int totalClicks;
 
     OverlayController(OverlayService service) {
         this.service = service;
@@ -154,7 +163,7 @@ final class OverlayController {
         counter = makeChip("0/0", 12, Color.WHITE, 0xE61B1F27);
         counter.setGravity(Gravity.CENTER);
         counter.setVisibility(View.GONE);
-        counterParams = params(dp(72), dp(32), 0, 0);
+        counterParams = params(dp(112), dp(32), 0, 0);
         counterParams.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
         updateCounterPosition();
         windowManager.addView(counter, counterParams);
@@ -289,6 +298,12 @@ final class OverlayController {
         if (target == null || clickerPanel == null) {
             return;
         }
+        clickerRunning = running;
+        handler.removeCallbacks(executionTimeTick);
+        if (running) {
+            clickerStartedAt = SystemClock.uptimeMillis();
+            updateExecutionTime();
+        }
         clickerPanel.setRunning(running);
         if (counter != null) {
             counter.setVisibility(running ? View.VISIBLE : View.GONE);
@@ -315,7 +330,26 @@ final class OverlayController {
         if (counter == null) {
             return;
         }
-        counter.setText(completed + "/" + (total == 0 ? "∞" : total));
+        completedClicks = completed;
+        totalClicks = total;
+        updateCounterText();
+    }
+
+    private void updateExecutionTime() {
+        if (!clickerRunning || counter == null) {
+            return;
+        }
+        updateCounterText();
+        long elapsed = SystemClock.uptimeMillis() - clickerStartedAt;
+        handler.postDelayed(executionTimeTick, 1000L - elapsed % 1000L);
+    }
+
+    private void updateCounterText() {
+        long elapsedSeconds = clickerRunning
+                ? (SystemClock.uptimeMillis() - clickerStartedAt) / 1000L
+                : 0L;
+        counter.setText(completedClicks + "/" + (totalClicks == 0 ? "∞" : totalClicks)
+                + " · " + elapsedSeconds + "s");
         updateCounterPosition();
         windowManager.updateViewLayout(counter, counterParams);
     }
