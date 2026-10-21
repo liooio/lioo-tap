@@ -7,6 +7,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PathMeasure;
+import android.graphics.Rect;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
@@ -15,6 +16,7 @@ import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -36,10 +38,15 @@ final class GestureRecordingOverlay {
         void onClosed(JSONArray steps, boolean save);
     }
 
+    interface FloatingWindowBoundsProvider {
+        List<Rect> getBounds();
+    }
+
     private final OverlayService service;
     private final WindowManager windowManager;
     private final WindowManager captureWindowManager;
     private final Listener listener;
+    private final FloatingWindowBoundsProvider floatingWindowBoundsProvider;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable statusUpdate = this::updateStatus;
     private final List<RecordedGesture> recordedGestures = new ArrayList<>();
@@ -50,16 +57,12 @@ final class GestureRecordingOverlay {
     private GestureTrailView gestureTrail;
     private LinearLayout controls;
     private TextView status;
-    private TextView primary;
-    private TextView secondary;
-    private TextView tertiary;
+    private RecordingActionButton primary;
+    private RecordingActionButton secondary;
+    private RecordingActionButton tertiary;
     private LinearLayout settingsPanel;
     private WindowManager.LayoutParams settingsParams;
     private WindowManager.LayoutParams controlParams;
-    private float dragDownX;
-    private float dragDownY;
-    private int dragStartX;
-    private int dragStartY;
     private long downTime;
     private long lastPointTime;
     private long lastInjectedAt;
@@ -78,9 +81,10 @@ final class GestureRecordingOverlay {
     private int replayLoop;
 
     GestureRecordingOverlay(OverlayService service, ClickAccessibilityService accessibility,
-            Listener listener) {
+            Listener listener, FloatingWindowBoundsProvider floatingWindowBoundsProvider) {
         this.service = service;
         this.listener = listener;
+        this.floatingWindowBoundsProvider = floatingWindowBoundsProvider;
         windowManager = (WindowManager) service.getSystemService(
                 Context.WINDOW_SERVICE);
         // Android 12 及以上版本允许受信任的无障碍悬浮窗传递触摸。
@@ -94,50 +98,78 @@ final class GestureRecordingOverlay {
         }
         active = true;
         controls = new LinearLayout(service);
-        controls.setOrientation(LinearLayout.HORIZONTAL);
-        controls.setGravity(Gravity.CENTER_VERTICAL);
-        controls.setPadding(dp(14), dp(8), dp(8), dp(8));
-        controls.setBackground(background(0xF21B1E2C, dp(18)));
+        controls.setOrientation(LinearLayout.VERTICAL);
+        controls.setGravity(Gravity.CENTER_HORIZONTAL);
+        controls.setPadding(dp(8), dp(6), dp(8), dp(8));
+        controls.setBackground(background(0xF21B1E2C, dp(20)));
         controls.setContentDescription("拖动录制操作栏");
-        controls.setOnTouchListener(this::dragControls);
-        status = text("录制准备 · 0 步", 13, Color.WHITE, true);
-        controls.addView(status, new LinearLayout.LayoutParams(
-                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        primary = action("开始", 0xFF1769FF);
-        primary.setOnClickListener(view -> {
+        View dragHandle = recordingDragHandle();
+        controls.addView(dragHandle, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(18)));
+        status = text("准备 · 0 步", 10, Color.WHITE, true);
+        status.setGravity(Gravity.CENTER);
+        status.setMaxLines(2);
+        status.setIncludeFontPadding(false);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(30));
+        statusParams.bottomMargin = dp(4);
+        controls.addView(status, statusParams);
+        primary = action(R.drawable.ic_clicker_play, "开始", "开始录制");
+        primary.view.setOnClickListener(view -> {
             if (recording) {
                 pauseRecording();
             } else {
                 startOrResumeRecording();
             }
         });
-        secondary = action("取消", 0xFF3A4254);
-        secondary.setOnClickListener(view -> stop(false));
-        tertiary = action("完成", 0xFF3A4254);
-        tertiary.setOnClickListener(view -> completeRecording());
+        secondary = action(R.drawable.ic_clicker_exit, "取消", "取消录制");
+        secondary.view.setOnClickListener(view -> stop(false));
+        tertiary = action(R.drawable.ic_record_done, "完成", "完成录制");
+        tertiary.view.setVisibility(View.GONE);
+        tertiary.view.setOnClickListener(view -> completeRecording());
         addAction(primary);
         addAction(secondary);
         addAction(tertiary);
-        TextView settings = action("设置", 0xFF3A4254);
-        settings.setOnClickListener(view -> showPlaybackSettings());
+        RecordingActionButton settings = action(
+                R.drawable.ic_record_settings, "设置", "录制设置");
+        settings.view.setOnClickListener(view -> showPlaybackSettings());
         addAction(settings);
 
-        int width = Math.min(dp(390),
-                service.getResources().getDisplayMetrics().widthPixels - dp(24));
         controlParams = new WindowManager.LayoutParams(
-                width, dp(58), WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                dp(64), WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 android.graphics.PixelFormat.TRANSLUCENT);
         controlParams.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
         controlParams.y = dp(24);
+        float defaultY = dp(24)
+                / (float) Math.max(1, service.getResources().getDisplayMetrics().heightPixels
+                        - dp(260));
+        FloatingWindowDragController.restorePosition(service, controls, controlParams,
+                "recording_controls", 0.5f, defaultY);
         windowManager.addView(controls, controlParams);
+        FloatingWindowDragController.create(service, windowManager,
+                controls, controlParams, "recording_controls", 0.5f, defaultY,
+                null, this::onControlsDragFinished, dragHandle);
         Toast.makeText(service, "请打开目标应用，再点击顶部操作栏的“开始”",
                 Toast.LENGTH_LONG).show();
     }
 
     void cancel() {
         stop(false);
+    }
+
+    void refreshCaptureRegions() {
+        if (!active || !recording) {
+            return;
+        }
+        handler.post(() -> {
+            if (active && recording) {
+                removeCapture();
+                ensureCapture();
+            }
+        });
     }
 
     private void startOrResumeRecording() {
@@ -147,8 +179,8 @@ final class GestureRecordingOverlay {
         recording = true;
         lastInjectedAt = SystemClock.uptimeMillis();
         pendingDelayMs = 0;
-        primary.setText("暂停");
-        primary.setAlpha(1f);
+        setAction(primary, R.drawable.ic_record_pause, "暂停", "暂停录制");
+        primary.view.setAlpha(1f);
         updateStatus();
         // 等待“开始”按钮完成当前触摸序列后再创建捕获窗口。
         handler.post(() -> {
@@ -168,8 +200,8 @@ final class GestureRecordingOverlay {
         recording = false;
         removeCapture();
         hideGestureTrail();
-        primary.setText("开始");
-        primary.setAlpha(1f);
+        setAction(primary, R.drawable.ic_clicker_play, "开始", "继续录制");
+        primary.view.setAlpha(1f);
         status.setText("已暂停 · " + actionCount() + " 步");
     }
 
@@ -181,8 +213,8 @@ final class GestureRecordingOverlay {
             finishRequested = true;
             recording = false;
             status.setText("正在完成最后一步…");
-            primary.setEnabled(false);
-            primary.setAlpha(0.45f);
+            primary.view.setEnabled(false);
+            primary.view.setAlpha(0.45f);
             return;
         }
         if (recordedGestures.isEmpty()) {
@@ -199,21 +231,19 @@ final class GestureRecordingOverlay {
         replaying = false;
         hideGestureTrail();
         status.setText("录制完成 · " + actionCount() + " 步");
-        primary.setText("回放");
-        primary.setEnabled(true);
-        primary.setAlpha(1f);
-        primary.setBackground(background(0xFF1769FF, dp(12)));
-        primary.setOnClickListener(view -> startReplay());
-        secondary.setText("取消");
-        secondary.setEnabled(true);
-        secondary.setAlpha(1f);
-        secondary.setBackground(background(0xFF3A4254, dp(12)));
-        secondary.setOnClickListener(view -> stop(false));
-        tertiary.setText("保存");
-        tertiary.setEnabled(true);
-        tertiary.setAlpha(1f);
-        tertiary.setBackground(background(0xFF2F7D55, dp(12)));
-        tertiary.setOnClickListener(view -> stop(true));
+        setAction(primary, R.drawable.ic_clicker_play, "回放", "回放录制");
+        primary.view.setEnabled(true);
+        primary.view.setAlpha(1f);
+        primary.view.setOnClickListener(view -> startReplay());
+        setAction(secondary, R.drawable.ic_clicker_exit, "取消", "取消录制");
+        secondary.view.setEnabled(true);
+        secondary.view.setAlpha(1f);
+        secondary.view.setOnClickListener(view -> stop(false));
+        setAction(tertiary, R.drawable.ic_record_save, "保存", "保存录制");
+        tertiary.view.setVisibility(View.VISIBLE);
+        tertiary.view.setEnabled(true);
+        tertiary.view.setAlpha(1f);
+        tertiary.view.setOnClickListener(view -> stop(true));
     }
 
     private void startReplay() {
@@ -229,13 +259,12 @@ final class GestureRecordingOverlay {
         replaying = true;
         replayIndex = 0;
         replayLoop = 0;
-        primary.setText("停止");
-        primary.setBackground(background(0xFFE24B4B, dp(12)));
-        primary.setOnClickListener(view -> stopReplay());
-        secondary.setAlpha(0.45f);
-        secondary.setEnabled(false);
-        tertiary.setAlpha(0.45f);
-        tertiary.setEnabled(false);
+        setAction(primary, R.drawable.ic_clicker_stop, "停止", "停止回放");
+        primary.view.setOnClickListener(view -> stopReplay());
+        secondary.view.setAlpha(0.45f);
+        secondary.view.setEnabled(false);
+        tertiary.view.setAlpha(0.45f);
+        tertiary.view.setEnabled(false);
         if (ClickSettings.playbackShowsTrail(service)) {
             showGestureTrail();
         }
@@ -315,20 +344,77 @@ final class GestureRecordingOverlay {
         if (captureAdded || !active || controls == null) {
             return;
         }
-        int[] position = new int[2];
-        controls.getLocationOnScreen(position);
         int screenWidth = service.getResources().getDisplayMetrics().widthPixels;
         int screenHeight = service.getResources().getDisplayMetrics().heightPixels;
-        int left = Math.max(0, Math.min(screenWidth, position[0]));
-        int top = Math.max(0, Math.min(screenHeight, position[1]));
-        int right = Math.max(left, Math.min(screenWidth, position[0] + controls.getWidth()));
-        int bottom = Math.max(top, Math.min(screenHeight, position[1] + controls.getHeight()));
+        List<Rect> exclusions = new ArrayList<>();
+        addExclusion(exclusions, controls, screenWidth, screenHeight);
+        if (floatingWindowBoundsProvider != null) {
+            for (Rect bounds : floatingWindowBoundsProvider.getBounds()) {
+                addExclusion(exclusions, bounds, screenWidth, screenHeight);
+            }
+        }
 
-        addCaptureRegion(0, 0, screenWidth, top);
-        addCaptureRegion(0, bottom, screenWidth, screenHeight - bottom);
-        addCaptureRegion(0, top, left, bottom - top);
-        addCaptureRegion(right, top, screenWidth - right, bottom - top);
+        List<Rect> regions = new ArrayList<>();
+        regions.add(new Rect(0, 0, screenWidth, screenHeight));
+        for (Rect exclusion : exclusions) {
+            subtractRect(regions, exclusion);
+        }
+        for (Rect region : regions) {
+            addCaptureRegion(region.left, region.top, region.width(), region.height());
+        }
         captureAdded = !captures.isEmpty();
+    }
+
+    private void addExclusion(List<Rect> exclusions, View view,
+            int screenWidth, int screenHeight) {
+        if (view == null || !view.isAttachedToWindow()
+                || view.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        int[] location = new int[2];
+        view.getLocationOnScreen(location);
+        addExclusion(exclusions, new Rect(location[0], location[1],
+                location[0] + view.getWidth(), location[1] + view.getHeight()),
+                screenWidth, screenHeight);
+    }
+
+    private void addExclusion(List<Rect> exclusions, Rect bounds,
+            int screenWidth, int screenHeight) {
+        Rect safeBounds = new Rect(bounds);
+        safeBounds.inset(-dp(2), -dp(2));
+        if (safeBounds.intersect(0, 0, screenWidth, screenHeight)) {
+            exclusions.add(safeBounds);
+        }
+    }
+
+    /** 把窗口触摸区域从屏幕捕获区切除，点按和拖动都交回悬浮窗本身处理。 */
+    private void subtractRect(List<Rect> regions, Rect exclusion) {
+        List<Rect> remaining = new ArrayList<>();
+        for (Rect region : regions) {
+            Rect intersection = new Rect(region);
+            if (!intersection.intersect(exclusion)) {
+                remaining.add(region);
+                continue;
+            }
+            if (region.top < intersection.top) {
+                remaining.add(new Rect(region.left, region.top,
+                        region.right, intersection.top));
+            }
+            if (intersection.bottom < region.bottom) {
+                remaining.add(new Rect(region.left, intersection.bottom,
+                        region.right, region.bottom));
+            }
+            if (region.left < intersection.left) {
+                remaining.add(new Rect(region.left, intersection.top,
+                        intersection.left, intersection.bottom));
+            }
+            if (intersection.right < region.right) {
+                remaining.add(new Rect(intersection.right, intersection.top,
+                        region.right, intersection.bottom));
+            }
+        }
+        regions.clear();
+        regions.addAll(remaining);
     }
 
     private void addCaptureRegion(int x, int y, int width, int height) {
@@ -372,7 +458,11 @@ final class GestureRecordingOverlay {
         settingsPanel.setOrientation(LinearLayout.VERTICAL);
         settingsPanel.setPadding(dp(18), dp(16), dp(18), dp(16));
         settingsPanel.setBackground(background(0xFA1B1E2C, dp(18)));
-        settingsPanel.addView(text("回放基础设置", 16, Color.WHITE, true));
+        LinearLayout settingsHeader = new LinearLayout(service);
+        settingsHeader.setGravity(Gravity.CENTER_VERTICAL);
+        settingsHeader.setContentDescription("拖动回放设置弹窗");
+        settingsHeader.addView(text("回放基础设置", 16, Color.WHITE, true));
+        settingsPanel.addView(settingsHeader);
         TextView hint = text("延时 0 秒立即开始，次数 0 表示无限循环", 12,
                 0xFFBCC6D8, false);
         LinearLayout.LayoutParams hintParams = new LinearLayout.LayoutParams(
@@ -419,7 +509,11 @@ final class GestureRecordingOverlay {
                         | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                 android.graphics.PixelFormat.TRANSLUCENT);
         settingsParams.gravity = Gravity.CENTER;
+        FloatingWindowDragController.restorePosition(service, settingsPanel, settingsParams,
+                "recording_settings", 0.5f, 0.5f);
         windowManager.addView(settingsPanel, settingsParams);
+        FloatingWindowDragController.attach(service, windowManager, settingsPanel,
+                settingsHeader, settingsParams, "recording_settings", 0.5f, 0.5f);
     }
 
     private LinearLayout settingRow(String label, TextView value, int min, int max) {
@@ -429,11 +523,15 @@ final class GestureRecordingOverlay {
         row.addView(text(label, 13, Color.WHITE, true), new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
         TextView minus = action("−", 0xFF3A4254);
-        minus.setOnClickListener(view -> adjustValue(value, -1, min, max));
+        Runnable decrement = () -> adjustValue(value, -1, min, max);
+        minus.setOnClickListener(view -> decrement.run());
+        LongPressStepper.attach(minus, decrement);
         row.addView(minus, new LinearLayout.LayoutParams(dp(42), dp(38)));
         row.addView(value, new LinearLayout.LayoutParams(dp(64), dp(38)));
         TextView plus = action("+", 0xFF3A4254);
-        plus.setOnClickListener(view -> adjustValue(value, 1, min, max));
+        Runnable increment = () -> adjustValue(value, 1, min, max);
+        plus.setOnClickListener(view -> increment.run());
+        LongPressStepper.attach(plus, increment);
         row.addView(plus, new LinearLayout.LayoutParams(dp(42), dp(38)));
         return row;
     }
@@ -533,7 +631,7 @@ final class GestureRecordingOverlay {
         }
         int action = event.getActionMasked();
         if (action == MotionEvent.ACTION_DOWN) {
-            ignoreTouchSequence = isInsideControls(event.getRawX(), event.getRawY())
+            ignoreTouchSequence = isInsideFloatingWindow(event.getRawX(), event.getRawY())
                     || event.getPointerCount() != 1;
             if (ignoreTouchSequence) {
                 points.clear();
@@ -592,14 +690,30 @@ final class GestureRecordingOverlay {
         return true;
     }
 
-    private boolean isInsideControls(float screenX, float screenY) {
-        if (controls == null || !controls.isAttachedToWindow()) {
+    private boolean isInsideFloatingWindow(float screenX, float screenY) {
+        if (contains(controls, screenX, screenY)) {
+            return true;
+        }
+        if (floatingWindowBoundsProvider == null) {
             return false;
         }
-        int[] position = new int[2];
-        controls.getLocationOnScreen(position);
-        return screenX >= position[0] && screenX < position[0] + controls.getWidth()
-                && screenY >= position[1] && screenY < position[1] + controls.getHeight();
+        for (Rect bounds : floatingWindowBoundsProvider.getBounds()) {
+            if (bounds.contains((int) screenX, (int) screenY)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean contains(View view, float screenX, float screenY) {
+        if (view == null || !view.isAttachedToWindow()
+                || view.getVisibility() != View.VISIBLE) {
+            return false;
+        }
+        int[] location = new int[2];
+        view.getLocationOnScreen(location);
+        return screenX >= location[0] && screenX < location[0] + view.getWidth()
+                && screenY >= location[1] && screenY < location[1] + view.getHeight();
     }
 
     private void addPoint(float x, float y, long eventTime, boolean finalPoint) {
@@ -717,8 +831,8 @@ final class GestureRecordingOverlay {
                         finishRequested = false;
                         if (recordedGestures.isEmpty()) {
                             recording = true;
-                            primary.setEnabled(true);
-                            primary.setAlpha(1f);
+                            primary.view.setEnabled(true);
+                            primary.view.setAlpha(1f);
                             ensureCapture();
                         } else {
                             showCompletedActions();
@@ -782,47 +896,24 @@ final class GestureRecordingOverlay {
         if (status != null) {
             status.setText("录制中 · " + actionCount() + " 步");
         }
+        if (tertiary != null && !replaying) {
+            tertiary.view.setVisibility(actionCount() > 0 ? View.VISIBLE : View.GONE);
+        }
     }
 
     private int actionCount() {
         return recordedActionCount;
     }
 
-    private boolean dragControls(View view, MotionEvent event) {
-        if (controlParams == null || controls == null) {
-            return false;
+    private void onControlsDragFinished() {
+        if (recording) {
+            handler.post(() -> {
+                if (active && recording) {
+                    removeCapture();
+                    ensureCapture();
+                }
+            });
         }
-        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-            dragDownX = event.getRawX();
-            dragDownY = event.getRawY();
-            dragStartX = controlParams.x;
-            dragStartY = controlParams.y;
-            return true;
-        }
-        if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
-            int screenWidth = service.getResources().getDisplayMetrics().widthPixels;
-            int screenHeight = service.getResources().getDisplayMetrics().heightPixels;
-            int maxX = Math.max(0, (screenWidth - controls.getWidth()) / 2);
-            controlParams.x = Math.max(-maxX, Math.min(maxX,
-                    dragStartX + Math.round(event.getRawX() - dragDownX)));
-            controlParams.y = Math.max(0, Math.min(screenHeight - controls.getHeight(),
-                    dragStartY + Math.round(event.getRawY() - dragDownY)));
-            windowManager.updateViewLayout(controls, controlParams);
-            return true;
-        }
-        int action = event.getActionMasked();
-        if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-            if (recording) {
-                handler.post(() -> {
-                    if (active && recording) {
-                        removeCapture();
-                        ensureCapture();
-                    }
-                });
-            }
-            return true;
-        }
-        return false;
     }
 
     private void stop(boolean save) {
@@ -1106,6 +1197,42 @@ final class GestureRecordingOverlay {
         return view;
     }
 
+    private LinearLayout recordingDragHandle() {
+        LinearLayout handle = new LinearLayout(service);
+        handle.setGravity(Gravity.CENTER);
+        handle.setContentDescription("拖动录制操作栏");
+        View grip = new View(service);
+        grip.setBackground(background(0xFF687084, dp(2)));
+        handle.addView(grip, new LinearLayout.LayoutParams(dp(28), dp(4)));
+        return handle;
+    }
+
+    private RecordingActionButton action(int iconResource, String label,
+            String description) {
+        LinearLayout container = new LinearLayout(service);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setGravity(Gravity.CENTER);
+        container.setBackground(background(0xFF252D3E, dp(12)));
+        container.setContentDescription(description);
+        container.setClickable(true);
+        container.setFocusable(true);
+
+        ImageView icon = new ImageView(service);
+        icon.setImageResource(iconResource);
+        icon.setColorFilter(Color.WHITE);
+        icon.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        container.addView(icon, new LinearLayout.LayoutParams(dp(22), dp(22)));
+
+        TextView labelView = text(label, 9, Color.WHITE, true);
+        labelView.setGravity(Gravity.CENTER);
+        labelView.setSingleLine(true);
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        labelParams.topMargin = dp(1);
+        container.addView(labelView, labelParams);
+        return new RecordingActionButton(container, icon, labelView);
+    }
+
     private TextView action(String label, int color) {
         TextView view = text(label, 13, Color.WHITE, true);
         view.setGravity(Gravity.CENTER);
@@ -1113,10 +1240,30 @@ final class GestureRecordingOverlay {
         return view;
     }
 
-    private void addAction(TextView action) {
-        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(dp(56), dp(42));
-        actionParams.leftMargin = dp(6);
-        controls.addView(action, actionParams);
+    private void setAction(RecordingActionButton action, int iconResource, String label,
+            String description) {
+        action.icon.setImageResource(iconResource);
+        action.label.setText(label);
+        action.view.setContentDescription(description);
+    }
+
+    private void addAction(RecordingActionButton action) {
+        LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(50));
+        actionParams.topMargin = dp(4);
+        controls.addView(action.view, actionParams);
+    }
+
+    private static final class RecordingActionButton {
+        final LinearLayout view;
+        final ImageView icon;
+        final TextView label;
+
+        RecordingActionButton(LinearLayout view, ImageView icon, TextView label) {
+            this.view = view;
+            this.icon = icon;
+            this.label = label;
+        }
     }
 
     private GradientDrawable background(int color, int radius) {

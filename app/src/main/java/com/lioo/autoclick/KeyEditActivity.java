@@ -285,7 +285,7 @@ public final class KeyEditActivity extends Activity {
         button.setGravity(Gravity.CENTER);
         button.setBackground(Ui.round(this, Ui.PRIMARY_CONTAINER, 12));
         button.setContentDescription((delta < 0 ? "减少" : "增加") + Math.abs(delta));
-        button.setOnClickListener(view -> {
+        Runnable adjust = () -> {
             int current;
             try {
                 current = Integer.parseInt(input.getText().toString().trim());
@@ -295,7 +295,9 @@ public final class KeyEditActivity extends Activity {
             int next = Math.max(min, Math.min(max, current + delta));
             input.setText(String.valueOf(next));
             input.setSelection(input.length());
-        });
+        };
+        button.setOnClickListener(view -> adjust.run());
+        LongPressStepper.attach(button, adjust);
         return button;
     }
 

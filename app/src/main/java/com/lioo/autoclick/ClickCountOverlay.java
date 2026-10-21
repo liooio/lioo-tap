@@ -6,7 +6,6 @@ import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.EditText;
@@ -23,10 +22,6 @@ final class ClickCountOverlay {
     private OutsideTouchLayout root;
     private EditText countInput;
     private WindowManager.LayoutParams params;
-    private float downX;
-    private float downY;
-    private int startX;
-    private int startY;
 
     ClickCountOverlay(OverlayService service, WindowManager windowManager,
             DisplayMetrics displayMetrics, OutsideTouchLayout.Listener outsideTouchListener) {
@@ -54,7 +49,6 @@ final class ClickCountOverlay {
         LinearLayout header = new LinearLayout(service);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.setContentDescription("拖动次数确认弹窗");
-        header.setOnTouchListener(this::drag);
         TextView title = text("确认点击次数", 17, Color.WHITE, true);
         header.addView(title, new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1));
@@ -90,7 +84,11 @@ final class ClickCountOverlay {
                         | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
                 android.graphics.PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.CENTER;
+        FloatingWindowDragController.restorePosition(service, root, params,
+                "click_count", 0.5f, 0.5f);
         windowManager.addView(root, params);
+        FloatingWindowDragController.attach(service, windowManager, root, header, params,
+                "click_count", 0.5f, 0.5f);
     }
 
     void hide() {
@@ -140,7 +138,7 @@ final class ClickCountOverlay {
         TextView button = text(label, 22, Color.WHITE, true);
         button.setGravity(Gravity.CENTER);
         button.setBackground(background(0xFF354156, dp(10)));
-        button.setOnClickListener(view -> {
+        Runnable adjust = () -> {
             int current;
             try {
                 current = Integer.parseInt(countInput.getText().toString().trim());
@@ -150,7 +148,9 @@ final class ClickCountOverlay {
             int next = Math.max(0, Math.min(1000000, current + delta));
             countInput.setText(String.valueOf(next));
             countInput.setSelection(countInput.length());
-        });
+        };
+        button.setOnClickListener(view -> adjust.run());
+        LongPressStepper.attach(button, adjust);
         return button;
     }
 
@@ -164,30 +164,6 @@ final class ClickCountOverlay {
         input.setGravity(Gravity.CENTER);
         input.setBackground(background(0xFF303A4A, dp(10)));
         return input;
-    }
-
-    private boolean drag(View view, MotionEvent event) {
-        if (params == null) {
-            return false;
-        }
-        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-            downX = event.getRawX();
-            downY = event.getRawY();
-            startX = params.x;
-            startY = params.y;
-            return true;
-        }
-        if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
-            int maxX = Math.max(0, (displayMetrics.widthPixels - root.getWidth()) / 2);
-            int maxY = Math.max(0, (displayMetrics.heightPixels - root.getHeight()) / 2);
-            params.x = Math.max(-maxX, Math.min(maxX,
-                    startX + Math.round(event.getRawX() - downX)));
-            params.y = Math.max(-maxY, Math.min(maxY,
-                    startY + Math.round(event.getRawY() - downY)));
-            windowManager.updateViewLayout(root, params);
-            return true;
-        }
-        return event.getActionMasked() == MotionEvent.ACTION_UP;
     }
 
     private TextView text(String value, int size, int color, boolean bold) {

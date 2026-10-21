@@ -260,7 +260,7 @@ public final class EditorActivity extends Activity {
         button.setBackground(Ui.round(this, Ui.PRIMARY_CONTAINER, 12));
         button.setContentDescription((delta < 0 ? "减少" : "增加")
                 + Math.abs(delta) + "毫秒");
-        button.setOnClickListener(view -> {
+        Runnable adjust = () -> {
             long current;
             try {
                 current = Long.parseLong(input.getText().toString().trim());
@@ -270,7 +270,9 @@ public final class EditorActivity extends Activity {
             long next = Math.max(0, Math.min(600000, current + delta));
             input.setText(String.valueOf(next));
             input.setSelection(input.length());
-        });
+        };
+        button.setOnClickListener(view -> adjust.run());
+        LongPressStepper.attach(button, adjust);
         return button;
     }
 

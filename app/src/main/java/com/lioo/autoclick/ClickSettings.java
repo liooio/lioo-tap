@@ -94,6 +94,22 @@ final class ClickSettings {
                 .apply();
     }
 
+    static boolean floatingBallOnRight(Context context) {
+        return preferences(context).getBoolean("floating_ball_right", false);
+    }
+
+    static float floatingBallYRatio(Context context) {
+        return Math.max(0f, Math.min(1f,
+                preferences(context).getFloat("floating_ball_y_ratio", 0.96f)));
+    }
+
+    static void saveFloatingBallPosition(Context context, boolean onRight, float yRatio) {
+        preferences(context).edit()
+                .putBoolean("floating_ball_right", onRight)
+                .putFloat("floating_ball_y_ratio", Math.max(0f, Math.min(1f, yRatio)))
+                .apply();
+    }
+
     private static SharedPreferences preferences(Context context) {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }

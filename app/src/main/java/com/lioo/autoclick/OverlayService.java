@@ -183,8 +183,14 @@ public final class OverlayService extends Service {
                             Toast.makeText(this, "无法打开保存页面", Toast.LENGTH_LONG).show();
                         }
                     }
-                });
+                }, overlay::getInteractiveFloatingBounds);
         recorder.start();
+    }
+
+    void refreshRecordingCapture() {
+        if (recorder != null) {
+            recorder.refreshCaptureRegions();
+        }
     }
 
     void runShortcut(Library.Entry shortcut) {

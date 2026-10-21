@@ -64,10 +64,6 @@ final class ScriptPlaybackOverlay {
     private JSONObject retryStep;
     private JSONObject inFlightStep;
     private long controlTouchUptime;
-    private float dragDownX;
-    private float dragDownY;
-    private int dragStartX;
-    private int dragStartY;
 
     ScriptPlaybackOverlay(OverlayService service, String body, String name, Listener listener) {
         this(service, body, name, false, listener);
@@ -108,7 +104,6 @@ final class ScriptPlaybackOverlay {
         controls.setPadding(dp(14), dp(8), dp(8), dp(8));
         controls.setBackground(background(0xF21B1E2C, dp(18)));
         controls.setContentDescription("拖动回放操作栏");
-        controls.setOnTouchListener(this::drag);
         status = text(autoStart
                 ? executionLabel("准备执行")
                 : "等待开始 · " + name, 13, Color.WHITE, true);
@@ -157,8 +152,16 @@ final class ScriptPlaybackOverlay {
                 android.graphics.PixelFormat.TRANSLUCENT);
         params.gravity = Gravity.TOP | Gravity.CENTER_HORIZONTAL;
         params.y = dp(24);
+        float defaultY = dp(24)
+                / (float) Math.max(1, service.getResources().getDisplayMetrics().heightPixels
+                        - dp(58));
+        FloatingWindowDragController.restorePosition(service, controls, params,
+                "playback_controls", 0.5f, defaultY);
         showPlaybackTrail();
         windowManager.addView(controls, params);
+        controls.setOnTouchListener(FloatingWindowDragController.create(service, windowManager,
+                controls, params, "playback_controls", 0.5f, defaultY,
+                this::markControlTouch, null, controls));
         if (autoStart) {
             started = true;
             beginRun();
@@ -463,30 +466,6 @@ final class ScriptPlaybackOverlay {
         Toast.makeText(service, completed ? "录制脚本回放完成" : "已停止回放",
                 Toast.LENGTH_SHORT).show();
         listener.onStopped();
-    }
-
-    private boolean drag(View view, MotionEvent event) {
-        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-            markControlTouch();
-            dragDownX = event.getRawX();
-            dragDownY = event.getRawY();
-            dragStartX = params.x;
-            dragStartY = params.y;
-            return true;
-        }
-        if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
-            int screenWidth = service.getResources().getDisplayMetrics().widthPixels;
-            int screenHeight = service.getResources().getDisplayMetrics().heightPixels;
-            int maxX = Math.max(0, (screenWidth - controls.getWidth()) / 2);
-            params.x = Math.max(-maxX, Math.min(maxX,
-                    dragStartX + Math.round(event.getRawX() - dragDownX)));
-            params.y = Math.max(0, Math.min(screenHeight - controls.getHeight(),
-                    dragStartY + Math.round(event.getRawY() - dragDownY)));
-            windowManager.updateViewLayout(controls, params);
-            return true;
-        }
-        return event.getActionMasked() == MotionEvent.ACTION_UP
-                || event.getActionMasked() == MotionEvent.ACTION_CANCEL;
     }
 
     private TextView text(String value, int sp, int color, boolean bold) {

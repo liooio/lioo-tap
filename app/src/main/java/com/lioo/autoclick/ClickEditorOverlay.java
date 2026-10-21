@@ -7,7 +7,6 @@ import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
 import android.util.DisplayMetrics;
 import android.view.Gravity;
-import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
 import android.view.inputmethod.InputMethodManager;
@@ -26,10 +25,6 @@ final class ClickEditorOverlay {
     private OutsideTouchLayout editor;
     private EditText intervalInput;
     private WindowManager.LayoutParams editorParams;
-    private float dragDownX;
-    private float dragDownY;
-    private int dragStartX;
-    private int dragStartY;
 
     ClickEditorOverlay(OverlayService service, WindowManager windowManager,
             DisplayMetrics displayMetrics, OutsideTouchLayout.Listener outsideTouchListener,
@@ -68,7 +63,6 @@ final class ClickEditorOverlay {
         close.setOnClickListener(view -> hide());
         header.addView(close, new LinearLayout.LayoutParams(dp(36), dp(36)));
         header.setContentDescription("拖动设置弹窗");
-        header.setOnTouchListener(this::dragEditor);
         editor.addView(header);
 
         TextView hint = text("设置每次点击之间的时间间隔", 12, 0xFFD0D8E8, false);
@@ -99,7 +93,11 @@ final class ClickEditorOverlay {
                 android.graphics.PixelFormat.TRANSLUCENT);
         editorParams.gravity = Gravity.CENTER;
         editorParams.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE;
+        FloatingWindowDragController.restorePosition(service, editor, editorParams,
+                "click_editor", 0.5f, 0.5f);
         windowManager.addView(editor, editorParams);
+        FloatingWindowDragController.attach(service, windowManager, editor, header,
+                editorParams, "click_editor", 0.5f, 0.5f);
         editor.requestFocus();
     }
 
@@ -176,7 +174,7 @@ final class ClickEditorOverlay {
         button.setBackground(background(0xFF354156, dp(10)));
         button.setContentDescription((delta < 0 ? "减少" : "增加")
                 + Math.abs(delta));
-        button.setOnClickListener(view -> {
+        Runnable adjust = () -> {
             int current;
             try {
                 current = Integer.parseInt(input.getText().toString().trim());
@@ -186,32 +184,10 @@ final class ClickEditorOverlay {
             int next = Math.max(min, Math.min(max, current + delta));
             input.setText(String.valueOf(next));
             input.setSelection(input.length());
-        });
+        };
+        button.setOnClickListener(view -> adjust.run());
+        LongPressStepper.attach(button, adjust);
         return button;
-    }
-
-    private boolean dragEditor(View view, MotionEvent event) {
-        if (editorParams == null) {
-            return false;
-        }
-        if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-            dragDownX = event.getRawX();
-            dragDownY = event.getRawY();
-            dragStartX = editorParams.x;
-            dragStartY = editorParams.y;
-            return true;
-        }
-        if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
-            int maxX = Math.max(0, (displayMetrics.widthPixels - editor.getWidth()) / 2);
-            int maxY = Math.max(0, (displayMetrics.heightPixels - editor.getHeight()) / 2);
-            editorParams.x = Math.max(-maxX, Math.min(maxX,
-                    dragStartX + Math.round(event.getRawX() - dragDownX)));
-            editorParams.y = Math.max(-maxY, Math.min(maxY,
-                    dragStartY + Math.round(event.getRawY() - dragDownY)));
-            windowManager.updateViewLayout(editor, editorParams);
-            return true;
-        }
-        return event.getActionMasked() == MotionEvent.ACTION_UP;
     }
 
     private TextView text(String label, int sizeSp, int color, boolean bold) {

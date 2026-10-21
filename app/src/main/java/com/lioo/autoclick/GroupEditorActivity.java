@@ -203,12 +203,12 @@ public final class GroupEditorActivity extends Activity {
         controls.addView(Ui.text(this, "循环次数", 13, Ui.MUTED, true),
                 new LinearLayout.LayoutParams(0,
                         LinearLayout.LayoutParams.WRAP_CONTENT, 1));
-        controls.addView(repeatButton("−", item, -1),
-                new LinearLayout.LayoutParams(Ui.dp(this, 40), Ui.dp(this, 40)));
         EditText repeat = repeatInput(item);
+        controls.addView(repeatButton("−", item, repeat, meta, recording, -1),
+                new LinearLayout.LayoutParams(Ui.dp(this, 40), Ui.dp(this, 40)));
         controls.addView(repeat, new LinearLayout.LayoutParams(
                 Ui.dp(this, 70), Ui.dp(this, 40)));
-        controls.addView(repeatButton("+", item, 1),
+        controls.addView(repeatButton("+", item, repeat, meta, recording, 1),
                 new LinearLayout.LayoutParams(Ui.dp(this, 40), Ui.dp(this, 40)));
         TextView delete = Ui.text(this, "删除", 13, Ui.ERROR, true);
         delete.setGravity(Gravity.CENTER);
@@ -319,19 +319,22 @@ public final class GroupEditorActivity extends Activity {
         return input;
     }
 
-    private TextView repeatButton(String label, JSONObject item, int delta) {
+    private TextView repeatButton(String label, JSONObject item, EditText repeat,
+            TextView meta, Library.Entry recording, int delta) {
         TextView button = Ui.text(this, label, 21, Ui.PURPLE, true);
         button.setGravity(Gravity.CENTER);
         button.setBackground(Ui.round(this, Ui.SOFT_PURPLE, 10));
-        button.setOnClickListener(view -> {
-            try {
-                item.put("repeat", Math.max(1,
-                        Math.min(9999, GroupScript.repeat(item) + delta)));
-            } catch (JSONException ignored) {
-                return;
-            }
-            render();
-        });
+        Runnable adjust = () -> {
+            int next = Math.max(1, Math.min(9999, GroupScript.repeat(item) + delta));
+            repeat.setText(String.valueOf(next));
+            meta.setText(recording == null ? "无法执行，请删除此项"
+                    : recording.stepCount() + " 个步骤 · 循环 " + next + " 次 · 间隔 "
+                            + GroupScript.intervalMs(item) + " ms");
+            summary.setText(sequence.length() + " 个录制 · "
+                    + GroupScript.expandedStepCount(this, sequence) + " 个执行步骤");
+        };
+        button.setOnClickListener(view -> adjust.run());
+        LongPressStepper.attach(button, adjust);
         return button;
     }
 

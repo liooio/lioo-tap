@@ -2,6 +2,7 @@ package com.lioo.autoclick;
 
 import android.content.Context;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
@@ -18,6 +19,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 final class OverlayController {
+    private static final long BALL_COLLAPSE_DELAY_MS = 1800L;
+    private static final String LOGO_POSITION_KEY = "logo_ball_center";
+
     private final OverlayService service;
     private final WindowManager windowManager;
     private final DisplayMetrics displayMetrics;
@@ -25,7 +29,9 @@ final class OverlayController {
     private final ClickCountOverlay clickCount;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable executionTimeTick = this::updateExecutionTime;
+    private final Runnable collapseBallTask = this::collapseFloatingBall;
     private ClickerToolboxView clickerPanel;
+    private View toolboxMask;
     private OutsideTouchLayout controls;
     private LogoBallView toolbox;
     private DragHandle target;
@@ -34,8 +40,14 @@ final class OverlayController {
     private WindowManager.LayoutParams controlsParams;
     private WindowManager.LayoutParams targetParams;
     private WindowManager.LayoutParams counterParams;
+    private float targetDefaultXRatio;
+    private float targetDefaultYRatio;
     private final List<FloatingShortcut> floatingShortcuts = new ArrayList<>();
     private boolean ballOnRight = false;
+    private float ballYRatio = 0.5f;
+    private boolean ballCollapsed;
+    private boolean ballWasCollapsedOnTouch;
+    private int ballDragStartY;
     private boolean clickerRunning;
     private long clickerStartedAt;
     private int completedClicks;
@@ -59,11 +71,37 @@ final class OverlayController {
         return target != null && target.getVisibility() == View.VISIBLE;
     }
 
+    List<Rect> getInteractiveFloatingBounds() {
+        List<Rect> bounds = new ArrayList<>();
+        addViewBounds(bounds, toolbox);
+        addViewBounds(bounds, controls);
+        addViewBounds(bounds, target);
+        for (FloatingShortcut shortcut : floatingShortcuts) {
+            addViewBounds(bounds, shortcut.view);
+        }
+        return bounds;
+    }
+
+    private void addViewBounds(List<Rect> bounds, View view) {
+        if (view == null || !view.isAttachedToWindow()
+                || view.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        int[] location = new int[2];
+        view.getLocationOnScreen(location);
+        bounds.add(new Rect(location[0], location[1],
+                location[0] + view.getWidth(), location[1] + view.getHeight()));
+    }
+
     void show() {
         if (isVisible()) {
             return;
         }
-        int targetSize = dp(48);
+        int targetSize = dp(40);
+        ballOnRight = FloatingWindowDragController.edgeOnRight(
+                service, LOGO_POSITION_KEY, false);
+        ballYRatio = FloatingWindowDragController.edgeYRatio(
+                service, LOGO_POSITION_KEY, 0.5f);
         toolbox = new LogoBallView(service);
         toolbox.setContentDescription("悬浮窗，点击打开工具箱");
         toolbox.setOnClickListener(view -> {
@@ -74,12 +112,43 @@ final class OverlayController {
             }
         });
         ballParams = params(targetSize, targetSize,
-                edgeX(targetSize),
-                Math.max(0, screenHeight() - targetSize - dp(24)));
+                collapsedEdgeX(targetSize),
+                ballY(targetSize));
+        // 半隐藏需要允许窗口的一部分位于屏幕边界外。
+        ballParams.flags |= WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
         ballParams.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
-        toolbox.setOnTouchListener(new DragListener(ballParams, false, true));
+        toolbox.setOnTouchListener(FloatingWindowDragController.createWithStrategy(
+                service, windowManager, toolbox, ballParams,
+                () -> {
+                    ballWasCollapsedOnTouch = ballCollapsed;
+                    expandFloatingBall();
+                    ballDragStartY = ballParams.y;
+                }, new FloatingWindowDragController.PositionStrategy() {
+                    @Override
+                    public void move(float rawX, float deltaX, float deltaY) {
+                        ballOnRight = rawX >= screenWidth() / 2f;
+                        ballParams.x = expandedEdgeX(toolbox.getWidth());
+                        ballParams.y = Math.max(0, Math.min(
+                                screenHeight() - toolbox.getHeight(),
+                                ballDragStartY + Math.round(deltaY)));
+                    }
+
+                    @Override
+                    public void finish(boolean moved) {
+                        if (controls == null) {
+                            saveBallPosition();
+                            scheduleBallCollapse();
+                        }
+                        service.refreshRecordingCapture();
+                    }
+                }, () -> {
+                    if (!ballWasCollapsedOnTouch) {
+                        toolbox.performClick();
+                    }
+                }));
         windowManager.addView(toolbox, ballParams);
+        ballCollapsed = true;
         toolbox.post(this::snapFloatingBallToEdge);
         refreshShortcutKeys();
     }
@@ -89,12 +158,14 @@ final class OverlayController {
             return;
         }
         // 屏幕旋转后重新贴边，避免原来的右边缘位置落到新屏幕中央。
-        ballParams.x = edgeX(ballParams.width);
-        ballParams.y = Math.max(0, Math.min(screenHeight() - ballParams.height, ballParams.y));
+        ballParams.x = ballCollapsed
+                ? collapsedEdgeX(ballParams.width) : expandedEdgeX(ballParams.width);
+        ballParams.y = ballY(ballParams.height);
         windowManager.updateViewLayout(toolbox, ballParams);
         if (controls != null) {
             if (target == null) {
                 windowManager.removeView(controls);
+                removeToolboxMask();
                 controls = null;
                 clickerPanel = null;
                 controlsParams = null;
@@ -113,6 +184,7 @@ final class OverlayController {
         if (controls != null) {
             return;
         }
+        expandFloatingBall();
         int panelWidth = pickerWidth();
         int panelHeight = pickerHeight();
         List<Library.Entry> workflows = Library.list(service, Library.GROUP);
@@ -125,14 +197,20 @@ final class OverlayController {
         clickerPanel = new ClickerToolboxView(service, displayMetrics,
                 this::onOutsideTouch, this::showClicker, service::startRecording,
                 this::toggleClickEditor, this::onRunPressed, this::hidePanel,
+                this::resetAllFloatingPositions,
                 workflows, service::runEntry, toolboxShortcuts, service::runShortcut);
         controls = clickerPanel.view();
         controlsParams = params(panelWidth, panelHeight,
                 pickerX(panelWidth), pickerY(panelHeight));
         controlsParams.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                 | WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH;
-        clickerPanel.setDragListener(new DragListener(controlsParams, false, false));
+        FloatingWindowDragController.restorePosition(service, controls, controlsParams,
+                "toolbox_panel", 0.5f, 0.5f);
+        showToolboxMask();
         windowManager.addView(controls, controlsParams);
+        clickerPanel.setDragListener(FloatingWindowDragController.create(service, windowManager,
+                controls, controlsParams, "toolbox_panel", 0.5f, 0.5f,
+                null, null, clickerPanel.dragHandles()));
         updateToolboxState();
     }
 
@@ -140,14 +218,30 @@ final class OverlayController {
         if (controls == null || target != null) {
             return;
         }
-        int panelWidth = Math.min(dp(300), screenWidth() - dp(32));
-        int panelHeight = dp(96);
+        // 连点器需要操作下层应用，进入配置后不再拦截屏幕其余区域。
+        removeToolboxMask();
+        int panelWidth = Math.min(dp(ClickerToolboxView.CLICKER_PANEL_WIDTH_DP),
+                screenWidth() - dp(32));
+        int panelHeight = dp(ClickerToolboxView.CLICKER_PANEL_HEIGHT_DP);
         controlsParams.width = panelWidth;
         controlsParams.height = panelHeight;
-        controlsParams.x = (screenWidth() - panelWidth) / 2;
+        controlsParams.x = dp(ClickerToolboxView.CLICKER_PANEL_LEFT_MARGIN_DP);
         controlsParams.y = dp(32);
         clickerPanel.showClicker();
+        float defaultY = dp(32)
+                / (float) Math.max(1, screenHeight() - panelHeight);
+        FloatingWindowDragController.restorePosition(service, controls, controlsParams,
+                ClickerToolboxView.CLICKER_POSITION_KEY,
+                ClickerToolboxView.CLICKER_PANEL_LEFT_MARGIN_DP
+                        / (float) Math.max(1, screenWidth() - panelWidth),
+                defaultY);
         windowManager.updateViewLayout(controls, controlsParams);
+        clickerPanel.setActionDragListener(FloatingWindowDragController.create(
+                service, windowManager, controls, controlsParams,
+                ClickerToolboxView.CLICKER_POSITION_KEY,
+                ClickerToolboxView.CLICKER_PANEL_LEFT_MARGIN_DP
+                        / (float) Math.max(1, screenWidth() - panelWidth),
+                defaultY, null, null));
 
         int targetSize = dp(56);
         target = makeChip("◎", 23, Color.WHITE, 0xDD2563EB);
@@ -157,8 +251,17 @@ final class OverlayController {
         target.setGravity(Gravity.CENTER);
         int[] targetPosition = initialTargetPosition(targetSize, controlsParams);
         targetParams = params(targetSize, targetSize, targetPosition[0], targetPosition[1]);
-        target.setOnTouchListener(new DragListener(targetParams, true, false));
+        targetDefaultXRatio = targetParams.x
+                / (float) Math.max(1, screenWidth() - targetSize);
+        targetDefaultYRatio = targetParams.y
+                / (float) Math.max(1, screenHeight() - targetSize);
+        FloatingWindowDragController.restorePosition(service, target, targetParams,
+                "click_target", targetDefaultXRatio, targetDefaultYRatio);
         windowManager.addView(target, targetParams);
+        target.setOnTouchListener(FloatingWindowDragController.createWithPositionListener(
+                service, windowManager,
+                target, targetParams, "click_target", targetDefaultXRatio, targetDefaultYRatio,
+                null, this::updateCounterDuringTargetDrag, null, target));
 
         counter = makeChip("0/0", 12, Color.WHITE, 0xE61B1F27);
         counter.setGravity(Gravity.CENTER);
@@ -167,6 +270,66 @@ final class OverlayController {
         counterParams.flags |= WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE;
         updateCounterPosition();
         windowManager.addView(counter, counterParams);
+    }
+
+    private void resetAllFloatingPositions() {
+        FloatingWindowDragController.resetAllPositions(service);
+
+        if (toolbox != null && ballParams != null) {
+            handler.removeCallbacks(collapseBallTask);
+            ballOnRight = false;
+            ballYRatio = 0.5f;
+            ballCollapsed = true;
+            FloatingWindowDragController.resetEdgePosition(
+                    service, LOGO_POSITION_KEY, false, 0.5f);
+            ballParams.x = collapsedEdgeX(ballParams.width);
+            ballParams.y = ballY(ballParams.height);
+            windowManager.updateViewLayout(toolbox, ballParams);
+        }
+
+        if (controls != null && controlsParams != null) {
+            if (target == null) {
+                FloatingWindowDragController.resetPosition(service, windowManager,
+                        controls, controlsParams, "toolbox_panel", 0.5f, 0.5f);
+            } else {
+                float defaultY = dp(32)
+                        / (float) Math.max(1, screenHeight() - controlsParams.height);
+                FloatingWindowDragController.resetPosition(service, windowManager,
+                        controls, controlsParams, ClickerToolboxView.CLICKER_POSITION_KEY,
+                        ClickerToolboxView.CLICKER_PANEL_LEFT_MARGIN_DP
+                                / (float) Math.max(1, screenWidth() - controlsParams.width),
+                        defaultY);
+                if (targetParams != null) {
+                    FloatingWindowDragController.resetPosition(service, windowManager,
+                            target, targetParams, "click_target",
+                            targetDefaultXRatio, targetDefaultYRatio);
+                    updateCounterDuringTargetDrag();
+                }
+            }
+        }
+
+        resetShortcutPositions();
+        scheduleBallCollapse();
+    }
+
+    private void resetShortcutPositions() {
+        int index = 0;
+        for (Library.Entry entry : Library.list(service, Library.KEY)) {
+            if (!ShortcutKey.FLOATING.equals(ShortcutKey.displayMode(entry))) {
+                continue;
+            }
+            float defaultY = Math.min(0.82f, 0.5f + index * 0.09f);
+            ShortcutKey.savePosition(service, entry, 0.72f, defaultY);
+            for (FloatingShortcut shortcut : floatingShortcuts) {
+                if (shortcut.entry.id.equals(entry.id)) {
+                    FloatingWindowDragController.resetPosition(service, windowManager,
+                            shortcut.view, shortcut.params, "shortcut_" + entry.id,
+                            0.72f, defaultY);
+                    break;
+                }
+            }
+            index++;
+        }
     }
 
     private void toggleClickEditor() {
@@ -196,6 +359,7 @@ final class OverlayController {
 
     private void hidePanel() {
         if (controls == null) {
+            removeToolboxMask();
             return;
         }
         // 收起工具箱时停止点击，避免目标点已移除后手势继续运行。
@@ -203,6 +367,7 @@ final class OverlayController {
         clickEditor.hide();
         clickCount.hide();
         windowManager.removeView(controls);
+        removeToolboxMask();
         if (target != null) {
             windowManager.removeView(target);
         }
@@ -216,10 +381,40 @@ final class OverlayController {
         targetParams = null;
         counterParams = null;
         updateToolboxState();
+        scheduleBallCollapse();
+    }
+
+    private void showToolboxMask() {
+        if (toolboxMask != null) {
+            return;
+        }
+        toolboxMask = new View(service);
+        toolboxMask.setBackgroundColor(Color.TRANSPARENT);
+        toolboxMask.setContentDescription("点击关闭工具箱");
+        toolboxMask.setOnTouchListener((view, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                // 当前触摸分发完成后再移除窗口，避免部分系统出现事件状态异常。
+                view.post(this::hidePanel);
+            }
+            return true;
+        });
+        WindowManager.LayoutParams maskParams = params(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT, 0, 0);
+        windowManager.addView(toolboxMask, maskParams);
+    }
+
+    private void removeToolboxMask() {
+        if (toolboxMask == null) {
+            return;
+        }
+        windowManager.removeView(toolboxMask);
+        toolboxMask = null;
     }
 
     private void onOutsideTouch(float screenX, float screenY) {
-        if (controls == null || service.shouldIgnoreOutsideTouch()
+        // 连点器需要允许用户直接操作下层应用，只能通过操作栏的“退出”结束。
+        if (controls == null || target != null || service.shouldIgnoreOutsideTouch()
                 || OutsideTouchLayout.contains(controls, screenX, screenY)
                 || OutsideTouchLayout.contains(toolbox, screenX, screenY)
                 || OutsideTouchLayout.contains(target, screenX, screenY)
@@ -247,12 +442,40 @@ final class OverlayController {
         toolbox.invalidate();
     }
 
+    private void expandFloatingBall() {
+        handler.removeCallbacks(collapseBallTask);
+        if (toolbox == null || ballParams == null) {
+            return;
+        }
+        ballCollapsed = false;
+        ballParams.x = expandedEdgeX(ballParams.width);
+        windowManager.updateViewLayout(toolbox, ballParams);
+    }
+
+    private void scheduleBallCollapse() {
+        handler.removeCallbacks(collapseBallTask);
+        if (toolbox != null && controls == null) {
+            handler.postDelayed(collapseBallTask, BALL_COLLAPSE_DELAY_MS);
+        }
+    }
+
+    private void collapseFloatingBall() {
+        if (toolbox == null || ballParams == null || controls != null) {
+            return;
+        }
+        ballCollapsed = true;
+        ballParams.x = collapsedEdgeX(ballParams.width);
+        windowManager.updateViewLayout(toolbox, ballParams);
+    }
+
     void hide() {
         if (!isVisible()) {
+            removeToolboxMask();
             return;
         }
         hidePanel();
         if (toolbox != null) {
+            handler.removeCallbacks(collapseBallTask);
             windowManager.removeView(toolbox);
             toolbox = null;
             ballParams = null;
@@ -394,7 +617,11 @@ final class OverlayController {
         WindowManager.LayoutParams params = params(width, height, x, y);
         FloatingShortcut shortcut = new FloatingShortcut(entry, view, params);
         view.setOnClickListener(ignored -> service.runShortcut(entry));
-        view.setOnTouchListener(new ShortcutDragListener(shortcut));
+        String positionKey = "shortcut_" + entry.id;
+        view.setOnTouchListener(FloatingWindowDragController.createShortcut(service,
+                windowManager, view, params, positionKey,
+                ShortcutKey.xRatio(entry, 0.72f), ShortcutKey.yRatio(entry, fallbackY),
+                !ShortcutKey.isLocked(entry), service::refreshRecordingCapture));
         windowManager.addView(view, params);
         floatingShortcuts.add(shortcut);
     }
@@ -469,58 +696,43 @@ final class OverlayController {
         return Math.round(value * displayMetrics.density);
     }
 
-    private int edgeX(int ballWidth) {
+    private int expandedEdgeX(int ballWidth) {
         return ballOnRight ? Math.max(0, screenWidth() - ballWidth) : 0;
     }
 
-    private int panelX(int width) {
-        return ballOnRight ? screenWidth() - ballParams.width - width - dp(12)
-                : ballParams.x + ballParams.width + dp(12);
+    private int collapsedEdgeX(int ballWidth) {
+        int visibleWidth = Math.max(dp(18), ballWidth / 2);
+        return ballOnRight ? screenWidth() - visibleWidth : visibleWidth - ballWidth;
     }
 
-    private int panelY(int height) {
-        int gap = dp(12);
-        int aboveBall = ballParams.y - height - gap;
-        if (aboveBall >= dp(12)) {
-            return aboveBall;
+    private int ballY(int ballHeight) {
+        return Math.round(Math.max(0, screenHeight() - ballHeight) * ballYRatio);
+    }
+
+    private void saveBallPosition() {
+        if (ballParams == null) {
+            return;
         }
-        return Math.max(dp(12), Math.min(screenHeight() - height - dp(12),
-                ballParams.y + ballParams.height + gap));
+        ballYRatio = ballParams.y
+                / (float) Math.max(1, screenHeight() - ballParams.height);
+        FloatingWindowDragController.saveEdgePosition(
+                service, LOGO_POSITION_KEY, ballOnRight, ballYRatio);
     }
 
     private int pickerWidth() {
-        return isPortrait()
-                ? Math.round(screenWidth() * 0.9f)
-                : Math.min(dp(360), screenWidth() - dp(32));
+        return Math.max(dp(1), screenWidth() - dp(32));
     }
 
     private int pickerHeight() {
-        int shortcutCount = 0;
-        for (Library.Entry entry : Library.list(service, Library.KEY)) {
-            if (ShortcutKey.TOOLBOX.equals(ShortcutKey.displayMode(entry))) {
-                shortcutCount++;
-            }
-        }
-        int shortcutRows = Math.max(1, (shortcutCount + 2) / 3);
-        int workflowCount = Library.list(service, Library.GROUP).size();
-        int workflowRows = Math.max(1, (workflowCount + 2) / 3);
-        int desired = dp(208 + workflowRows * 82 + shortcutRows * 82);
-        int maximum = isPortrait()
-                ? Math.round(screenHeight() * 0.68f)
-                : Math.round(screenHeight() * 0.9f);
-        return Math.min(desired, maximum);
+        return Math.min(dp(220), screenHeight() - dp(32));
     }
 
     private int pickerX(int width) {
-        return isPortrait() ? (screenWidth() - width) / 2 : panelX(width);
+        return Math.max(0, (screenWidth() - width) / 2);
     }
 
     private int pickerY(int height) {
-        return isPortrait() ? panelY(height) : (screenHeight() - height) / 2;
-    }
-
-    private boolean isPortrait() {
-        return screenHeight() >= screenWidth();
+        return Math.max(0, (screenHeight() - height) / 2);
     }
 
     private int[] initialTargetPosition(int size, WindowManager.LayoutParams panel) {
@@ -554,120 +766,20 @@ final class OverlayController {
                 targetParams.y + (targetParams.height - counterParams.height) / 2));
     }
 
+    private void updateCounterDuringTargetDrag() {
+        if (counter == null) {
+            return;
+        }
+        updateCounterPosition();
+        windowManager.updateViewLayout(counter, counterParams);
+    }
+
     private int screenWidth() {
         return service.getResources().getDisplayMetrics().widthPixels;
     }
 
     private int screenHeight() {
         return service.getResources().getDisplayMetrics().heightPixels;
-    }
-
-    private final class ShortcutDragListener implements View.OnTouchListener {
-        private final FloatingShortcut shortcut;
-        private float downX;
-        private float downY;
-        private int startX;
-        private int startY;
-
-        ShortcutDragListener(FloatingShortcut shortcut) {
-            this.shortcut = shortcut;
-        }
-
-        @Override
-        public boolean onTouch(View view, MotionEvent event) {
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                downX = event.getRawX();
-                downY = event.getRawY();
-                startX = shortcut.params.x;
-                startY = shortcut.params.y;
-                return true;
-            }
-            if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
-                if (ShortcutKey.isLocked(shortcut.entry)) {
-                    return true;
-                }
-                shortcut.params.x = Math.max(0, Math.min(
-                        screenWidth() - shortcut.view.getWidth(),
-                        startX + Math.round(event.getRawX() - downX)));
-                shortcut.params.y = Math.max(0, Math.min(
-                        screenHeight() - shortcut.view.getHeight(),
-                        startY + Math.round(event.getRawY() - downY)));
-                windowManager.updateViewLayout(shortcut.view, shortcut.params);
-                return true;
-            }
-            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
-                boolean click = ShortcutKey.isLocked(shortcut.entry)
-                        || Math.abs(event.getRawX() - downX) < dp(8)
-                        && Math.abs(event.getRawY() - downY) < dp(8);
-                if (click) {
-                    view.performClick();
-                } else {
-                    float xRatio = shortcut.params.x
-                            / (float) Math.max(1, screenWidth() - shortcut.view.getWidth());
-                    float yRatio = shortcut.params.y
-                            / (float) Math.max(1, screenHeight() - shortcut.view.getHeight());
-                    ShortcutKey.savePosition(service, shortcut.entry, xRatio, yRatio);
-                }
-                return true;
-            }
-            return false;
-        }
-    }
-
-    private final class DragListener implements View.OnTouchListener {
-        private final WindowManager.LayoutParams params;
-        private final boolean marker;
-        private final boolean toolboxHandle;
-        private float downX;
-        private float downY;
-        private int startX;
-        private int startY;
-
-        DragListener(WindowManager.LayoutParams params, boolean marker, boolean toolboxHandle) {
-            this.params = params;
-            this.marker = marker;
-            this.toolboxHandle = toolboxHandle;
-        }
-
-        @Override
-        public boolean onTouch(View view, MotionEvent event) {
-            WindowManager.LayoutParams current = marker ? params : (toolboxHandle ? params : controlsParams);
-            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
-                downX = event.getRawX();
-                downY = event.getRawY();
-                startX = current.x;
-                startY = current.y;
-                return true;
-            }
-            if (event.getActionMasked() == MotionEvent.ACTION_MOVE) {
-                View draggedView = marker ? target : (toolboxHandle ? toolbox : controls);
-                if (toolboxHandle) {
-                    // 悬浮球越过屏幕中线后切换贴边方向，不停留在屏幕中央。
-                    ballOnRight = event.getRawX() >= screenWidth() / 2f;
-                    current.x = edgeX(draggedView.getWidth());
-                } else {
-                    current.x = Math.max(0, Math.min(screenWidth() - draggedView.getWidth(),
-                            startX + Math.round(event.getRawX() - downX)));
-                }
-                current.y = Math.max(0, Math.min(screenHeight() - draggedView.getHeight(),
-                        startY + Math.round(event.getRawY() - downY)));
-                windowManager.updateViewLayout(marker ? target : (toolboxHandle ? toolbox : controls), current);
-                if (marker && counter != null) {
-                    updateCounterPosition();
-                    windowManager.updateViewLayout(counter, counterParams);
-                }
-                return true;
-            }
-            if (event.getActionMasked() == MotionEvent.ACTION_UP) {
-                if (Math.abs(event.getRawX() - downX) < dp(8)
-                        && Math.abs(event.getRawY() - downY) < dp(8)) {
-                    view.performClick();
-                }
-                return true;
-            }
-            return false;
-        }
-
     }
 
     private static final class DragHandle extends TextView {
